@@ -1,0 +1,30 @@
+[package]
+name = "fusion-embedding"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+description = "Native vLLM, llama.cpp, and DashScope clients for fusion embeddings"
+documentation = "https://docs.rs/fusion-embedding"
+repository = "https://github.com/agentsyaml/fusion-embedding"
+readme = "README.md"
+exclude = [".env", ".env.*", "secrets"]
+
+[features]
+default = ["vllm", "llama-cpp", "dashscope"]
+vllm = ["dep:secrecy"]
+llama-cpp = []
+dashscope = ["dep:secrecy"]
+
+[dependencies]
+base64 = "0.22"
+httpdate = "1"
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls"] }
+secrecy = { version = "0.10", optional = true }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "2"
+url = "2"
+
+[dev-dependencies]
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
