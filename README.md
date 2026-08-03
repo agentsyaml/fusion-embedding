@@ -8,10 +8,12 @@
 
 | Feature | Backend | Constructor |
 | --- | --- | --- |
-| `vllm` | vLLM OpenAI-compatible embeddings | `Client::vllm(VllmConfig)` |
-| `llama-cpp` | llama.cpp embeddings | `Client::llama_cpp(LlamaCppConfig)` |
-| `dashscope` | DashScope native multimodal embeddings | `Client::dashscope(DashScopeConfig)` |
-| `sglang` | SGLang v0.5.11+ standard embeddings | `Client::sglang(SglangConfig)` |
+| `vllm` | vLLM OpenAI-compatible embeddings | `Client::new(VllmConfig)` |
+| `llama-cpp` | llama.cpp embeddings | `Client::new(LlamaCppConfig)` |
+| `dashscope` | DashScope native multimodal embeddings | `Client::new(DashScopeConfig)` |
+| `sglang` | SGLang v0.5.11+ standard embeddings | `Client::new(SglangConfig)` |
+
+The configuration type selects the backend.
 
 vLLM, llama.cpp, and DashScope are enabled by default; SGLang is opt-in. Select only the backend you need:
 
@@ -22,9 +24,16 @@ fusion-embedding = { version = "0.1", default-features = false, features = ["sgl
 
 ## Scope and limits
 
-The public API provides `embed_texts` for a non-empty batch and `embed_fusion` for `ContentPart::{Text, ImageDataUrl, VideoSource}`. Images are **only canonical PNG or JPEG base64 data URLs**. The library does not perform file I/O. `VideoSource` is SGLang-only and is passed as a server-accessible URL/path or bare base64; data-video URLs are not promised.
+`embed_texts(&[S])` returns `BatchEmbeddingResponse`; `embed_multimodal(&[MultimodalPart])` fuses all parts into one `EmbeddingResponse`. Parts are `Text`, `ImageDataUrl`, or `VideoSource`, with lowercase constructors. Images are canonical PNG or JPEG base64 data URLs.
 
-vLLM and llama.cpp fusion requests require exactly one image. DashScope accepts up to five images and one to twenty content items. SGLang's standard endpoint supports at most one image and one video per vector; its runtime may support more, but the public endpoint schema cannot represent multiple images or videos in one item. A client fixes its model identity, pipeline ID, and expected dimensions; `EmbedOptions` can only override the per-call timeout.
+| Backend | Images per multimodal vector | Limits |
+| --- | --- | --- |
+| vLLM | One or more, in order | Configure a sufficient multimodal image limit; the model must support multiple images. |
+| llama.cpp | One or more, in order | Model and mmproj must support multiple images. |
+| DashScope | Up to 5 | 1–20 parts. |
+| SGLang standard endpoint | At most 1 | No multiple images in one item; at most one video; `image → video → text` order. |
+
+Use `embed_texts_with_options` or `embed_multimodal_with_options` to pass `EmbedOptions` by value.
 
 SGLang fusion parts must be in canonical `image → video → text` order. Each kind is optional but may appear at most once; non-canonical or repeated parts are rejected.
 
@@ -47,18 +56,18 @@ Construct a vLLM client and embed text:
 ```rust,no_run
 use std::num::NonZeroUsize;
 
-use fusion_embedding::{Client, EmbedOptions, VllmConfig};
+use fusion_embedding::{Client, VllmConfig};
 use url::Url;
 
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-let client = Client::vllm(VllmConfig::new(
+let client = Client::new(VllmConfig::new(
     Url::parse("http://127.0.0.1:8000/v1/models")?,
     "qwen3-vl-embedding",
     "my-deployment-revision",
     NonZeroUsize::new(2048).unwrap(),
 )?)?;
 let response = client
-    .embed_texts(&["a short sentence".into()], &EmbedOptions::default())
+    .embed_texts(&["a short sentence"])
     .await?;
 println!("{}", response.embeddings()[0].len());
 # Ok(())
@@ -68,15 +77,14 @@ println!("{}", response.embeddings()[0].len());
 For image-text fusion, create the data URL outside the library and preserve the desired part order:
 
 ```rust,no_run
-# use fusion_embedding::{Client, ContentPart, EmbedOptions};
+# use fusion_embedding::{Client, MultimodalPart};
 # async fn example(client: Client, image_data_url: String) -> Result<(), fusion_embedding::Error> {
 let response = client
-    .embed_fusion(
+    .embed_multimodal(
         &[
-            ContentPart::ImageDataUrl(image_data_url),
-            ContentPart::Text("a red square".into()),
+            MultimodalPart::image_data_url(image_data_url),
+            MultimodalPart::text("a red square"),
         ],
-        &EmbedOptions::default(),
     )
     .await?;
 # let _ = response;
@@ -99,7 +107,7 @@ All configurations support `.with_timeouts(connect_timeout, request_timeout)`. E
 
 ## Responses, errors, and safety
 
-`EmbeddingResponse` exposes ordered `embeddings()`, `space()`, `usage()`, and `diagnostics()`. `EmbeddingSpace` records the provider, configured model, pipeline ID, profile revision, dimension mode, and expected dimension. `Usage` and request/response IDs are optional.
+`BatchEmbeddingResponse` exposes `embeddings()`/`into_embeddings()`; `EmbeddingResponse` exposes `embedding()`/`into_embedding()`. Both expose metadata via `space()`, `usage()`, and `diagnostics()`.
 
 `Error` distinguishes invalid configuration or input, transport failures, provider API errors, invalid responses, and dimension mismatches. Successful responses are checked for complete unique indices, expected dimensions, finite non-zero vectors, then L2-normalized by the library.
 

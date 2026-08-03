@@ -10,7 +10,7 @@ use super::{
 };
 use crate::transport::validate_identifier;
 use crate::validation::validate_data_url;
-use crate::{ContentPart, Error};
+use crate::{Error, MultimodalPart, Provider};
 
 pub(crate) const PROFILE_REVISION: &str = "qwen3-vl-embedding-sglang-jinja-v1";
 const EMBEDDINGS_PATH: &str = "/v1/embeddings";
@@ -137,14 +137,14 @@ pub(crate) fn build_text_request<'a>(model: &'a str, texts: &'a [String]) -> Sgl
 #[cfg(feature = "sglang")]
 pub(crate) fn build_fusion_request<'a>(
     model: &'a str,
-    parts: &'a [ContentPart],
+    parts: &'a [MultimodalPart],
 ) -> Result<SglangRequest<'a>, Error> {
     let mut image = None;
     let mut video = None;
     let mut text = None;
     for part in parts {
         match part {
-            ContentPart::Text(value) => {
+            MultimodalPart::Text(value) => {
                 if value.is_empty() {
                     return Err(Error::InvalidInput {
                         message: "SGLang fusion text must not be empty".into(),
@@ -158,11 +158,11 @@ pub(crate) fn build_fusion_request<'a>(
                 }
                 text = Some(value.clone());
             }
-            ContentPart::ImageDataUrl(data_url) => {
+            MultimodalPart::ImageDataUrl(data_url) => {
                 if image.is_some() {
-                    return Err(Error::InvalidInput {
-                        message: "SGLang public embedding protocol supports at most one image per input item"
-                            .into(),
+                    return Err(Error::Unsupported {
+                        provider: Provider::Sglang,
+                        feature: "multiple images in one embedding input",
                     });
                 }
                 if video.is_some() || text.is_some() {
@@ -173,7 +173,7 @@ pub(crate) fn build_fusion_request<'a>(
                 }
                 image = Some(validate_data_url(data_url)?.to_owned());
             }
-            ContentPart::VideoSource(source) => {
+            MultimodalPart::VideoSource(source) => {
                 if source.trim().is_empty() {
                     return Err(Error::InvalidInput {
                         message: "SGLang video source must not be empty".into(),

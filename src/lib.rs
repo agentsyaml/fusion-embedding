@@ -1,4 +1,4 @@
-//! Native vLLM, llama.cpp, and DashScope clients with fixed Qwen3-VL wire profiles.
+//! Native vLLM, llama.cpp, DashScope, and SGLang clients with fixed Qwen3-VL wire profiles.
 
 mod error;
 mod types;
@@ -34,8 +34,8 @@ mod validation;
 
 pub use error::Error;
 pub use types::{
-    ContentPart, Diagnostics, DimensionMode, EmbedOptions, EmbeddingResponse, EmbeddingSpace,
-    Provider, Usage,
+    BatchEmbeddingResponse, Diagnostics, DimensionMode, EmbedOptions, EmbeddingResponse,
+    EmbeddingSpace, MultimodalPart, Provider, Usage,
 };
 
 #[cfg(feature = "dashscope")]
@@ -52,4 +52,4 @@ pub use backend::vllm::VllmConfig;
     feature = "dashscope",
     feature = "sglang"
 ))]
-pub use client::Client;
+pub use client::{BackendConfig, Client};

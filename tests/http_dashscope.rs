@@ -6,7 +6,8 @@ use std::num::NonZeroUsize;
 
 use common::*;
 use fusion_embedding::{
-    Client, ContentPart, DashScopeConfig, DimensionMode, EmbedOptions, Error, Provider,
+    BatchEmbeddingResponse, Client, DashScopeConfig, DimensionMode, EmbedOptions, Error,
+    MultimodalPart, Provider,
 };
 use secrecy::SecretString;
 use serde_json::json;
@@ -29,14 +30,14 @@ fn dashscope_client(mut endpoint: Url, dimensions: Option<usize>) -> Client {
             .with_server_dimensions(NonZeroUsize::new(dimensions).unwrap())
             .unwrap();
     }
-    Client::dashscope(config).unwrap()
+    Client::new(config).unwrap()
 }
 
-async fn embed(client: &Client) -> Result<fusion_embedding::EmbeddingResponse, Error> {
+async fn embed(client: &Client) -> Result<BatchEmbeddingResponse, Error> {
     client
-        .embed_texts(
+        .embed_texts_with_options(
             &["first".to_owned(), "second".to_owned()],
-            &EmbedOptions::default(),
+            EmbedOptions::default(),
         )
         .await
 }
@@ -107,13 +108,13 @@ async fn dashscope_fusion_post_preserves_independent_ordered_contents() {
     });
     let image = png_data_url();
     let response = dashscope_client(endpoint, None)
-        .embed_fusion(
+        .embed_multimodal_with_options(
             &[
-                ContentPart::ImageDataUrl(image.clone()),
-                ContentPart::Text("caption".into()),
-                ContentPart::ImageDataUrl(image.clone()),
+                MultimodalPart::ImageDataUrl(image.clone()),
+                MultimodalPart::Text("caption".into()),
+                MultimodalPart::ImageDataUrl(image.clone()),
             ],
-            &EmbedOptions::default(),
+            EmbedOptions::default(),
         )
         .await
         .unwrap();
@@ -140,7 +141,7 @@ async fn dashscope_fusion_post_preserves_independent_ordered_contents() {
             "parameters": {"enable_fusion": true, "output_type": "dense"}
         })
     );
-    assert_eq!(response.embeddings(), &[vec![0.6, 0.8]]);
+    assert_eq!(response.embedding(), &[0.6, 0.8]);
 }
 
 #[tokio::test]
@@ -150,9 +151,9 @@ async fn dashscope_fusion_rejects_text_operation_response_type() {
         write_chunked(stream, "200 OK", &[], body, 8).unwrap();
     });
     let error = dashscope_client(endpoint, None)
-        .embed_fusion(
-            &[ContentPart::ImageDataUrl(png_data_url())],
-            &EmbedOptions::default(),
+        .embed_multimodal_with_options(
+            &[MultimodalPart::ImageDataUrl(png_data_url())],
+            EmbedOptions::default(),
         )
         .await
         .unwrap_err();

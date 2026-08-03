@@ -12,7 +12,7 @@ use super::{
 };
 use crate::transport::validate_identifier;
 use crate::validation::validate_data_url;
-use crate::{ContentPart, DimensionMode, Error};
+use crate::{DimensionMode, Error, MultimodalPart};
 
 pub(crate) const PROFILE_REVISION: &str = "qwen3-vl-embedding-chat-v2";
 const EMBEDDINGS_PATH: &str = "/v1/embeddings";
@@ -180,7 +180,7 @@ enum Role {
 #[cfg(feature = "vllm")]
 pub(crate) fn build_fusion_request<'a>(
     model: &'a str,
-    parts: &'a [ContentPart],
+    parts: &'a [MultimodalPart],
     dimensions: Option<NonZeroUsize>,
 ) -> Result<FusionRequest<'a>, Error> {
     if parts.is_empty() {
@@ -192,24 +192,24 @@ pub(crate) fn build_fusion_request<'a>(
     let mut user_content = Vec::with_capacity(parts.len());
     for part in parts {
         match part {
-            ContentPart::Text(text) => user_content.push(MessagePart::Text { text }),
-            ContentPart::ImageDataUrl(url) => {
+            MultimodalPart::Text(text) => user_content.push(MessagePart::Text { text }),
+            MultimodalPart::ImageDataUrl(url) => {
                 image_count += 1;
                 validate_data_url(url)?;
                 user_content.push(MessagePart::ImageUrl {
                     image_url: ImageUrl { url },
                 });
             }
-            ContentPart::VideoSource(_) => {
+            MultimodalPart::VideoSource(_) => {
                 return Err(Error::InvalidInput {
                     message: "vLLM does not support VideoSource".into(),
                 });
             }
         }
     }
-    if image_count != 1 {
+    if image_count == 0 {
         return Err(Error::InvalidInput {
-            message: "fusion input must contain exactly one image".into(),
+            message: "fusion input must contain at least one image".into(),
         });
     }
 
@@ -264,7 +264,7 @@ pub(crate) fn normalize_endpoint(mut endpoint: Url) -> Result<Url, Error> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Client, ContentPart, DimensionMode};
+    use crate::{Client, DimensionMode, MultimodalPart};
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     use serde_json::json;
     use url::Url;
@@ -307,9 +307,9 @@ mod tests {
     fn fusion_payload_matches_golden_and_preserves_order() {
         let image = png_data_url(1, 1);
         let parts = vec![
-            ContentPart::Text("before".into()),
-            ContentPart::ImageDataUrl(image.clone()),
-            ContentPart::Text("after".into()),
+            MultimodalPart::Text("before".into()),
+            MultimodalPart::ImageDataUrl(image.clone()),
+            MultimodalPart::Text("after".into()),
         ];
         let value =
             serde_json::to_value(build_fusion_request("model", &parts, None).unwrap()).unwrap();
@@ -360,8 +360,8 @@ mod tests {
 
         let image = png_data_url(1, 1);
         let parts = vec![
-            ContentPart::ImageDataUrl(image.clone()),
-            ContentPart::Text("caption".into()),
+            MultimodalPart::ImageDataUrl(image.clone()),
+            MultimodalPart::Text("caption".into()),
         ];
         let fusion = serde_json::to_value(
             build_fusion_request("configured", &parts, Some(dimensions)).unwrap(),
@@ -398,25 +398,34 @@ mod tests {
         assert_eq!(config.dimension_mode, DimensionMode::Server);
         assert_eq!(config.expected_dimensions, dimensions);
         assert_eq!(config.requested_dimensions, Some(dimensions));
-        let client = Client::vllm(config).unwrap();
+        let client = Client::new(config).unwrap();
         assert_eq!(client.space.dimension_mode(), DimensionMode::Server);
         assert_eq!(client.space.expected_dimensions(), dimensions);
     }
     #[test]
-    fn fusion_requires_exactly_one_image() {
+    fn fusion_requires_at_least_one_image_and_preserves_multiple_images() {
         assert!(build_fusion_request("m", &[], None).is_err());
-        assert!(build_fusion_request("m", &[ContentPart::Text("x".into())], None).is_err());
+        assert!(build_fusion_request("m", &[MultimodalPart::Text("x".into())], None).is_err());
         let image = png_data_url(1, 1);
-        assert!(
+        let payload = serde_json::to_value(
             build_fusion_request(
                 "m",
                 &[
-                    ContentPart::ImageDataUrl(image.clone()),
-                    ContentPart::ImageDataUrl(image)
+                    MultimodalPart::ImageDataUrl(image.clone()),
+                    MultimodalPart::ImageDataUrl(image.clone()),
                 ],
-                None
+                None,
             )
-            .is_err()
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            payload["messages"][1]["content"][0]["image_url"]["url"],
+            image
+        );
+        assert_eq!(
+            payload["messages"][1]["content"][1]["image_url"]["url"],
+            image
         );
     }
     #[test]
@@ -432,7 +441,7 @@ mod tests {
             assert_eq!(config.dimension_mode, DimensionMode::Native);
             assert_eq!(config.expected_dimensions.get(), 3);
             assert_eq!(config.requested_dimensions, None);
-            assert!(Client::vllm(config).is_ok());
+            assert!(Client::new(config).is_ok());
         }
         assert!(
             VllmConfig::new(
@@ -466,7 +475,7 @@ mod tests {
             NonZeroUsize::new(1).unwrap(),
         )
         .unwrap();
-        assert!(Client::vllm(remote).is_err());
+        assert!(Client::new(remote).is_err());
         let opted_in = VllmConfig::new(
             Url::parse("http://example.com").unwrap(),
             "m",
@@ -475,7 +484,7 @@ mod tests {
         )
         .unwrap()
         .allow_remote_http(true);
-        assert!(Client::vllm(opted_in).is_ok());
+        assert!(Client::new(opted_in).is_ok());
         assert!(
             VllmConfig::new(
                 Url::parse("https://example.com").unwrap(),

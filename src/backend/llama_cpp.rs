@@ -11,7 +11,7 @@ use super::{
 };
 use crate::transport::validate_identifier;
 use crate::validation::validate_data_url;
-use crate::{ContentPart, Error};
+use crate::{Error, MultimodalPart};
 
 pub(crate) const PROFILE_REVISION: &str = "qwen3-vl-embedding-llama-cpp-v2";
 const EMBEDDINGS_PATH: &str = "/v1/embeddings";
@@ -121,13 +121,13 @@ pub(crate) struct LlamaFusionRequest<'a> {
 #[derive(Serialize)]
 struct LlamaFusionInput<'a> {
     pub(crate) prompt_string: String,
-    pub(crate) multimodal_data: [&'a str; 1],
+    pub(crate) multimodal_data: Vec<&'a str>,
 }
 
 #[cfg(feature = "llama-cpp")]
 pub(crate) fn build_llama_fusion_request<'a>(
     media_marker: &str,
-    parts: &'a [ContentPart],
+    parts: &'a [MultimodalPart],
 ) -> Result<LlamaFusionRequest<'a>, Error> {
     if parts.is_empty() {
         return Err(Error::InvalidInput {
@@ -135,11 +135,11 @@ pub(crate) fn build_llama_fusion_request<'a>(
         });
     }
     let mut image_count = 0;
-    let mut image_base64 = None;
+    let mut image_base64 = Vec::new();
     let mut atoms = Vec::with_capacity(parts.len());
     for part in parts {
         match part {
-            ContentPart::Text(text) => {
+            MultimodalPart::Text(text) => {
                 if text.is_empty() {
                     return Err(Error::InvalidInput {
                         message: "llama.cpp fusion text must not be empty".into(),
@@ -153,26 +153,23 @@ pub(crate) fn build_llama_fusion_request<'a>(
                 }
                 atoms.push(text.as_str());
             }
-            ContentPart::ImageDataUrl(url) => {
+            MultimodalPart::ImageDataUrl(url) => {
                 image_count += 1;
-                image_base64 = Some(validate_data_url(url)?);
+                image_base64.push(validate_data_url(url)?);
                 atoms.push(media_marker);
             }
-            ContentPart::VideoSource(_) => {
+            MultimodalPart::VideoSource(_) => {
                 return Err(Error::InvalidInput {
                     message: "llama.cpp does not support VideoSource".into(),
                 });
             }
         }
     }
-    if image_count != 1 {
+    if image_count == 0 {
         return Err(Error::InvalidInput {
-            message: "fusion input must contain exactly one image".into(),
+            message: "fusion input must contain at least one image".into(),
         });
     }
-    let image_base64 = image_base64.ok_or_else(|| Error::InvalidInput {
-        message: "fusion input must contain exactly one image".into(),
-    })?;
     let ordered_atoms = atoms.join(" ");
     let prompt_string = format!(
         "<|im_start|>system\n{SYSTEM_PROMPT}<|im_end|>\n<|im_start|>user\n{ordered_atoms}<|im_end|>\n<|im_start|>assistant\n"
@@ -185,7 +182,7 @@ pub(crate) fn build_llama_fusion_request<'a>(
     Ok(LlamaFusionRequest {
         input: LlamaFusionInput {
             prompt_string,
-            multimodal_data: [image_base64],
+            multimodal_data: image_base64,
         },
         encoding_format: EncodingFormat::Float,
         embd_normalize: 2,
@@ -217,7 +214,7 @@ pub(crate) fn normalize_llama_endpoint(mut endpoint: Url) -> Result<Url, Error> 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Client, ContentPart, Error};
+    use crate::{Client, Error, MultimodalPart};
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     use serde_json::json;
     use url::Url;
@@ -261,23 +258,23 @@ mod tests {
         let cases = [
             (
                 vec![
-                    ContentPart::ImageDataUrl(image.clone()),
-                    ContentPart::Text("caption".into()),
+                    MultimodalPart::ImageDataUrl(image.clone()),
+                    MultimodalPart::Text("caption".into()),
                 ],
                 "<marker> caption",
             ),
             (
                 vec![
-                    ContentPart::Text("caption".into()),
-                    ContentPart::ImageDataUrl(image.clone()),
+                    MultimodalPart::Text("caption".into()),
+                    MultimodalPart::ImageDataUrl(image.clone()),
                 ],
                 "caption <marker>",
             ),
             (
                 vec![
-                    ContentPart::Text("first".into()),
-                    ContentPart::Text("second".into()),
-                    ContentPart::ImageDataUrl(image.clone()),
+                    MultimodalPart::Text("first".into()),
+                    MultimodalPart::Text("second".into()),
+                    MultimodalPart::ImageDataUrl(image.clone()),
                 ],
                 "first second <marker>",
             ),
@@ -301,6 +298,31 @@ mod tests {
             assert!(value.get("model").is_none());
             assert!(value.get("dimensions").is_none());
         }
+        let second = png_data_url(2, 1);
+        let payload = serde_json::to_value(
+            build_llama_fusion_request(
+                marker,
+                &[
+                    MultimodalPart::ImageDataUrl(image.clone()),
+                    MultimodalPart::Text("between".into()),
+                    MultimodalPart::ImageDataUrl(second.clone()),
+                ],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            payload["input"]["prompt_string"]
+                .as_str()
+                .unwrap()
+                .matches(marker)
+                .count(),
+            2
+        );
+        assert_eq!(
+            payload["input"]["multimodal_data"],
+            json!([bare, second.split_once(',').unwrap().1])
+        );
     }
     #[test]
     fn llama_fusion_rejects_empty_text_marker_collision_and_wrong_image_count() {
@@ -310,8 +332,8 @@ mod tests {
             build_llama_fusion_request(
                 marker,
                 &[
-                    ContentPart::ImageDataUrl(image.clone()),
-                    ContentPart::Text(String::new())
+                    MultimodalPart::ImageDataUrl(image.clone()),
+                    MultimodalPart::Text(String::new())
                 ]
             )
             .is_err()
@@ -320,8 +342,8 @@ mod tests {
             build_llama_fusion_request(
                 marker,
                 &[
-                    ContentPart::ImageDataUrl(image.clone()),
-                    ContentPart::Text("contains <marker> collision".into())
+                    MultimodalPart::ImageDataUrl(image.clone()),
+                    MultimodalPart::Text("contains <marker> collision".into())
                 ]
             )
             .is_err()
@@ -329,7 +351,7 @@ mod tests {
         for ambiguous_marker in ["user", " "] {
             let error = match build_llama_fusion_request(
                 ambiguous_marker,
-                &[ContentPart::ImageDataUrl(image.clone())],
+                &[MultimodalPart::ImageDataUrl(image.clone())],
             ) {
                 Err(error) => error,
                 Ok(_) => panic!("ambiguous marker was accepted"),
@@ -345,17 +367,17 @@ mod tests {
             }
         }
         assert!(
-            build_llama_fusion_request(marker, &[ContentPart::Text("caption".into())]).is_err()
+            build_llama_fusion_request(marker, &[MultimodalPart::Text("caption".into())]).is_err()
         );
         assert!(
             build_llama_fusion_request(
                 marker,
                 &[
-                    ContentPart::ImageDataUrl(image.clone()),
-                    ContentPart::ImageDataUrl(image)
+                    MultimodalPart::ImageDataUrl(image.clone()),
+                    MultimodalPart::ImageDataUrl(image)
                 ]
             )
-            .is_err()
+            .is_ok()
         );
     }
     #[test]
@@ -370,7 +392,7 @@ mod tests {
             )
             .unwrap();
             assert_eq!(config.endpoint.path(), EMBEDDINGS_PATH);
-            assert!(Client::llama_cpp(config).is_ok());
+            assert!(Client::new(config).is_ok());
         }
         for url in [
             "http://localhost:8080/v1/models/",

@@ -10,7 +10,8 @@ use super::{
 use crate::transport::{MAX_DIAGNOSTIC_CHARS, sanitize_metadata, validate_identifier};
 use crate::validation::{IndexedEmbedding, validate_data_url, validate_embeddings};
 use crate::{
-    ContentPart, Diagnostics, DimensionMode, EmbeddingResponse, EmbeddingSpace, Error, Usage,
+    BatchEmbeddingResponse, Diagnostics, DimensionMode, EmbeddingSpace, Error, MultimodalPart,
+    Usage,
 };
 
 pub(crate) const PROFILE_REVISION: &str = "qwen3-vl-embedding-dashscope-native-v1";
@@ -233,7 +234,7 @@ pub(crate) fn build_dashscope_text_request<'a>(
 #[cfg(feature = "dashscope")]
 pub(crate) fn build_dashscope_fusion_request<'a>(
     model: &'a str,
-    parts: &'a [ContentPart],
+    parts: &'a [MultimodalPart],
     dimensions: Option<NonZeroUsize>,
 ) -> Result<DashScopeRequest<'a>, Error> {
     if parts.is_empty() || parts.len() > MAX_DASHSCOPE_CONTENTS {
@@ -247,8 +248,8 @@ pub(crate) fn build_dashscope_fusion_request<'a>(
     let mut contents = Vec::with_capacity(parts.len());
     for part in parts {
         match part {
-            ContentPart::Text(text) => contents.push(DashScopeContent::Text { text }),
-            ContentPart::ImageDataUrl(image) => {
+            MultimodalPart::Text(text) => contents.push(DashScopeContent::Text { text }),
+            MultimodalPart::ImageDataUrl(image) => {
                 image_count += 1;
                 if image_count > MAX_DASHSCOPE_IMAGES {
                     return Err(Error::InvalidInput {
@@ -260,7 +261,7 @@ pub(crate) fn build_dashscope_fusion_request<'a>(
                 validate_data_url(image)?;
                 contents.push(DashScopeContent::Image { image });
             }
-            ContentPart::VideoSource(_) => {
+            MultimodalPart::VideoSource(_) => {
                 return Err(Error::InvalidInput {
                     message: "DashScope does not support VideoSource".into(),
                 });
@@ -306,7 +307,7 @@ pub(crate) fn parse_dashscope_response(
     expected_count: usize,
     space: &EmbeddingSpace,
     operation: DashScopeOperation,
-) -> Result<EmbeddingResponse, Error> {
+) -> Result<BatchEmbeddingResponse, Error> {
     let wire: DashScopeWireResponse =
         serde_json::from_slice(body).map_err(|_| Error::InvalidResponse {
             message: "response does not match the DashScope schema".into(),
@@ -333,7 +334,7 @@ pub(crate) fn parse_dashscope_response(
         expected_count,
         space.expected_dimensions.get(),
     )?;
-    Ok(EmbeddingResponse {
+    Ok(BatchEmbeddingResponse {
         embeddings,
         space: space.clone(),
         usage: Usage {
@@ -353,7 +354,7 @@ pub(crate) fn parse_dashscope_response(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Client, ContentPart, DimensionMode, EmbedOptions, Error, Provider};
+    use crate::{Client, DimensionMode, Error, MultimodalPart, Provider};
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     use serde_json::json;
 
@@ -406,22 +407,22 @@ mod tests {
         for (parts, expected) in [
             (
                 vec![
-                    ContentPart::ImageDataUrl(image.clone()),
-                    ContentPart::Text("caption".into()),
+                    MultimodalPart::ImageDataUrl(image.clone()),
+                    MultimodalPart::Text("caption".into()),
                 ],
                 json!([{"image": image}, {"text": "caption"}]),
             ),
             (
                 vec![
-                    ContentPart::Text("caption".into()),
-                    ContentPart::ImageDataUrl(image.clone()),
+                    MultimodalPart::Text("caption".into()),
+                    MultimodalPart::ImageDataUrl(image.clone()),
                 ],
                 json!([{"text": "caption"}, {"image": image}]),
             ),
             (
                 vec![
-                    ContentPart::ImageDataUrl(image.clone()),
-                    ContentPart::ImageDataUrl(image.clone()),
+                    MultimodalPart::ImageDataUrl(image.clone()),
+                    MultimodalPart::ImageDataUrl(image.clone()),
                 ],
                 json!([{"image": image}, {"image": image}]),
             ),
@@ -436,20 +437,24 @@ mod tests {
             assert!(value["parameters"].get("dimension").is_none());
         }
         assert!(
-            build_dashscope_fusion_request("model", &[ContentPart::Text("text-only".into())], None)
-                .is_ok()
+            build_dashscope_fusion_request(
+                "model",
+                &[MultimodalPart::Text("text-only".into())],
+                None
+            )
+            .is_ok()
         );
     }
     #[test]
     fn dashscope_input_and_dimension_limits_are_enforced() {
         assert!(build_dashscope_fusion_request("m", &[], None).is_err());
         let too_many: Vec<_> = (0..=MAX_DASHSCOPE_CONTENTS)
-            .map(|_| ContentPart::Text("x".into()))
+            .map(|_| MultimodalPart::Text("x".into()))
             .collect();
         assert!(build_dashscope_fusion_request("m", &too_many, None).is_err());
         let image = png_data_url(1, 1);
         let too_many_images: Vec<_> = (0..=MAX_DASHSCOPE_IMAGES)
-            .map(|_| ContentPart::ImageDataUrl(image.clone()))
+            .map(|_| MultimodalPart::ImageDataUrl(image.clone()))
             .collect();
         assert!(build_dashscope_fusion_request("m", &too_many_images, None).is_err());
 
@@ -484,7 +489,7 @@ mod tests {
     }
     #[tokio::test]
     async fn dashscope_text_count_limits_are_enforced_before_http() {
-        let client = Client::dashscope(
+        let client = Client::new(
             DashScopeConfig::new(
                 Url::parse("http://127.0.0.1:9/native").unwrap(),
                 "m",
@@ -496,14 +501,12 @@ mod tests {
         )
         .unwrap();
         assert!(matches!(
-            client.embed_texts(&[], &EmbedOptions::default()).await,
+            client.embed_texts(&[] as &[&str]).await,
             Err(Error::InvalidInput { .. })
         ));
         let too_many = vec!["x".to_owned(); MAX_DASHSCOPE_CONTENTS + 1];
         assert!(matches!(
-            client
-                .embed_texts(&too_many, &EmbedOptions::default())
-                .await,
+            client.embed_texts(&too_many).await,
             Err(Error::InvalidInput { .. })
         ));
     }
@@ -521,7 +524,7 @@ mod tests {
         .unwrap();
         assert_eq!(config.endpoint, endpoint);
         assert!(!format!("{config:?}").contains(secret));
-        assert!(Client::dashscope(config).is_ok());
+        assert!(Client::new(config).is_ok());
 
         for invalid in [
             "https://example.com/",
@@ -561,8 +564,8 @@ mod tests {
             )
             .unwrap()
         };
-        assert!(Client::dashscope(remote_http()).is_err());
-        assert!(Client::dashscope(remote_http().allow_remote_http(true)).is_ok());
+        assert!(Client::new(remote_http()).is_err());
+        assert!(Client::new(remote_http().allow_remote_http(true)).is_ok());
     }
     #[test]
     fn dashscope_response_sorts_normalizes_and_maps_usage() {

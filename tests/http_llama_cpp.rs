@@ -5,7 +5,7 @@ mod common;
 use std::num::NonZeroUsize;
 
 use common::*;
-use fusion_embedding::{Client, ContentPart, EmbedOptions, LlamaCppConfig, Provider};
+use fusion_embedding::{Client, EmbedOptions, LlamaCppConfig, MultimodalPart, Provider};
 use serde_json::json;
 use url::Url;
 
@@ -20,7 +20,7 @@ fn llama_client(endpoint: Url, dimensions: usize, marker: &str) -> Client {
     .unwrap()
     .with_timeouts(IO_TIMEOUT, IO_TIMEOUT)
     .unwrap();
-    Client::llama_cpp(config).unwrap()
+    Client::new(config).unwrap()
 }
 
 fn png_data_url() -> String {
@@ -51,9 +51,9 @@ async fn llama_text_post_contract_sorts_and_normalizes_response() {
 
     let llama = llama_client(endpoint, 2, "<marker>");
     let response = llama
-        .embed_texts(
+        .embed_texts_with_options(
             &["first".to_owned(), "second".to_owned()],
-            &EmbedOptions::default(),
+            EmbedOptions::default(),
         )
         .await
         .unwrap();
@@ -101,12 +101,12 @@ async fn llama_fusion_post_uses_exact_wrapper_and_single_base64_array() {
     let bare = image.split_once(',').unwrap().1.to_owned();
     let marker = "<fixed-marker>";
     let response = llama_client(endpoint, 2, marker)
-        .embed_fusion(
+        .embed_multimodal_with_options(
             &[
-                ContentPart::ImageDataUrl(image),
-                ContentPart::Text("caption".into()),
+                MultimodalPart::ImageDataUrl(image),
+                MultimodalPart::Text("caption".into()),
             ],
-            &EmbedOptions::default(),
+            EmbedOptions::default(),
         )
         .await
         .unwrap();
@@ -127,8 +127,9 @@ async fn llama_fusion_post_uses_exact_wrapper_and_single_base64_array() {
     );
     assert!(payload.get("model").is_none());
     assert!(payload.get("dimensions").is_none());
-    assert_eq!(response.embeddings(), &[vec![0.6, 0.8]]);
-    let norm = response.embeddings()[0]
+    assert_eq!(response.embedding(), &[0.6, 0.8]);
+    let norm = response
+        .embedding()
         .iter()
         .map(|value| f64::from(*value).powi(2))
         .sum::<f64>()

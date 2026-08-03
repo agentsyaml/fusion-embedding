@@ -9,7 +9,9 @@ use std::{
 };
 
 use common::*;
-use fusion_embedding::{Client, DimensionMode, EmbedOptions, Error, VllmConfig};
+use fusion_embedding::{
+    BatchEmbeddingResponse, Client, DimensionMode, EmbedOptions, Error, VllmConfig,
+};
 use secrecy::SecretString;
 use serde_json::json;
 use url::Url;
@@ -26,7 +28,7 @@ fn client(endpoint: Url, dimensions: usize) -> Client {
     .unwrap()
     .with_timeouts(IO_TIMEOUT, IO_TIMEOUT)
     .unwrap();
-    Client::vllm(config).unwrap()
+    Client::new(config).unwrap()
 }
 
 fn server_dimensions_client(endpoint: Url, dimensions: usize) -> Client {
@@ -42,14 +44,14 @@ fn server_dimensions_client(endpoint: Url, dimensions: usize) -> Client {
     .unwrap()
     .with_timeouts(IO_TIMEOUT, IO_TIMEOUT)
     .unwrap();
-    Client::vllm(config).unwrap()
+    Client::new(config).unwrap()
 }
 
-async fn embed(client: &Client) -> Result<fusion_embedding::EmbeddingResponse, Error> {
+async fn embed(client: &Client) -> Result<BatchEmbeddingResponse, Error> {
     client
-        .embed_texts(
+        .embed_texts_with_options(
             &["first".to_owned(), "second".to_owned()],
-            &EmbedOptions::default(),
+            EmbedOptions::default(),
         )
         .await
 }

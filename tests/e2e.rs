@@ -19,7 +19,8 @@ use fusion_embedding::SglangConfig;
 #[cfg(feature = "vllm")]
 use fusion_embedding::VllmConfig;
 use fusion_embedding::{
-    Client, ContentPart, DimensionMode, EmbedOptions, EmbeddingResponse, EmbeddingSpace, Provider,
+    BatchEmbeddingResponse, Client, DimensionMode, EmbedOptions, EmbeddingResponse, EmbeddingSpace,
+    MultimodalPart, Provider,
 };
 #[cfg(any(feature = "vllm", feature = "dashscope", feature = "sglang"))]
 use secrecy::SecretString;
@@ -152,22 +153,20 @@ fn cosine_checks_shape_and_finite_values() {
 async fn coco_retrieval_sanity(client: &Client, provider: Provider) {
     let descriptions = COCO_TEST_DESCRIPTIONS.map(str::to_owned);
     let description_vectors = client
-        .embed_texts(&descriptions, &EmbedOptions::default())
+        .embed_texts_with_options(&descriptions, EmbedOptions::default())
         .await
         .unwrap_or_else(|error| panic!("COCO description embeddings failed: {error:?}"))
         .into_embeddings();
 
     for (image_id, path, matched_index) in COCO_CASES {
         let image_vector = client
-            .embed_fusion(
-                &[ContentPart::ImageDataUrl(image_data_url_from_path(path))],
-                &EmbedOptions::default(),
+            .embed_multimodal_with_options(
+                &[MultimodalPart::ImageDataUrl(image_data_url_from_path(path))],
+                EmbedOptions::default(),
             )
             .await
             .unwrap_or_else(|error| panic!("COCO image embedding failed: {error:?}"))
-            .into_embeddings()
-            .pop()
-            .expect("COCO image embedding response must contain one vector");
+            .into_embedding();
         let scores: Vec<f64> = description_vectors
             .iter()
             .map(|description| {
@@ -273,7 +272,7 @@ async fn discover_llama_marker(models_url: &Url, remote_http_allowed: bool) -> S
 }
 
 fn validate_response(
-    response: &EmbeddingResponse,
+    response: &BatchEmbeddingResponse,
     provider: Provider,
     dimension_mode: DimensionMode,
     count: usize,
@@ -305,6 +304,29 @@ fn validate_response(
     }
 }
 
+fn validate_embedding_response(
+    response: &EmbeddingResponse,
+    provider: Provider,
+    dimension_mode: DimensionMode,
+    expected_dimensions: NonZeroUsize,
+    fixed_space: &mut Option<EmbeddingSpace>,
+) {
+    assert_eq!(response.space().provider(), provider);
+    assert_eq!(response.space().dimension_mode(), dimension_mode);
+    assert_eq!(response.space().expected_dimensions(), expected_dimensions);
+    if let Some(space) = fixed_space {
+        assert_eq!(
+            response.space(),
+            space,
+            "embedding space changed between calls"
+        );
+    } else {
+        *fixed_space = Some(response.space().clone());
+    }
+    assert_eq!(response.embedding().len(), expected_dimensions.get());
+    assert!(response.embedding().iter().all(|value| value.is_finite()));
+}
+
 async fn exercise_provider(
     client: &Client,
     provider: Provider,
@@ -317,7 +339,7 @@ async fn exercise_provider(
     let mut fixed_space = None;
     let one_text = vec!["single E2E text".to_owned()];
     let response = client
-        .embed_texts(&one_text, &options)
+        .embed_texts_with_options(&one_text, options)
         .await
         .unwrap_or_else(|error| panic!("single-text embedding failed: {error:?}"));
     validate_response(
@@ -331,7 +353,7 @@ async fn exercise_provider(
 
     let two_texts = vec!["first E2E text".to_owned(), "second E2E text".to_owned()];
     let response = client
-        .embed_texts(&two_texts, &options)
+        .embed_texts_with_options(&two_texts, options)
         .await
         .unwrap_or_else(|error| panic!("two-text embedding failed: {error:?}"));
     validate_response(
@@ -344,53 +366,50 @@ async fn exercise_provider(
     );
 
     let response = client
-        .embed_fusion(&[ContentPart::ImageDataUrl(image.clone())], &options)
+        .embed_multimodal_with_options(&[MultimodalPart::ImageDataUrl(image.clone())], options)
         .await
         .unwrap_or_else(|error| panic!("image-only embedding failed: {error:?}"));
-    validate_response(
+    validate_embedding_response(
         &response,
         provider,
         dimension_mode,
-        1,
         expected_dimensions,
         &mut fixed_space,
     );
 
     let response = client
-        .embed_fusion(
+        .embed_multimodal_with_options(
             &[
-                ContentPart::ImageDataUrl(image.clone()),
-                ContentPart::Text("E2E caption".to_owned()),
+                MultimodalPart::ImageDataUrl(image.clone()),
+                MultimodalPart::Text("E2E caption".to_owned()),
             ],
-            &options,
+            options,
         )
         .await
         .unwrap_or_else(|error| panic!("image-caption embedding failed: {error:?}"));
-    validate_response(
+    validate_embedding_response(
         &response,
         provider,
         dimension_mode,
-        1,
         expected_dimensions,
         &mut fixed_space,
     );
 
     if repeat_image {
         let response = client
-            .embed_fusion(
+            .embed_multimodal_with_options(
                 &[
-                    ContentPart::ImageDataUrl(image.clone()),
-                    ContentPart::ImageDataUrl(image),
+                    MultimodalPart::ImageDataUrl(image.clone()),
+                    MultimodalPart::ImageDataUrl(image),
                 ],
-                &options,
+                options,
             )
             .await
             .unwrap_or_else(|error| panic!("repeated-image embedding failed: {error:?}"));
-        validate_response(
+        validate_embedding_response(
             &response,
             provider,
             dimension_mode,
-            1,
             expected_dimensions,
             &mut fixed_space,
         );
@@ -426,7 +445,7 @@ async fn llama_cpp_e2e() {
     if remote_http_allowed {
         config = config.allow_remote_http(true);
     }
-    let client = Client::llama_cpp(config)
+    let client = Client::new(config)
         .unwrap_or_else(|error| panic!("llama.cpp client construction failed: {error:?}"));
     exercise_provider(
         &client,
@@ -467,7 +486,7 @@ async fn vllm_e2e() {
     if remote_http_allowed {
         config = config.allow_remote_http(true);
     }
-    let client = Client::vllm(config)
+    let client = Client::new(config)
         .unwrap_or_else(|error| panic!("vLLM client construction failed: {error:?}"));
     exercise_provider(
         &client,
@@ -501,7 +520,7 @@ async fn sglang_e2e() {
     if remote_http_allowed {
         config = config.allow_remote_http(true);
     }
-    let client = Client::sglang(config)
+    let client = Client::new(config)
         .unwrap_or_else(|error| panic!("SGLang client construction failed: {error:?}"));
     exercise_provider(
         &client,
@@ -516,33 +535,31 @@ async fn sglang_e2e() {
     let options = EmbedOptions::default();
     let mut fixed_space = None;
     let video_only = client
-        .embed_fusion(&[ContentPart::VideoSource(video.clone())], &options)
+        .embed_multimodal_with_options(&[MultimodalPart::VideoSource(video.clone())], options)
         .await
         .unwrap_or_else(|error| panic!("SGLang video-only embedding failed: {error:?}"));
-    validate_response(
+    validate_embedding_response(
         &video_only,
         Provider::Sglang,
         DimensionMode::Native,
-        1,
         expected_dimensions,
         &mut fixed_space,
     );
     let mixed = client
-        .embed_fusion(
+        .embed_multimodal_with_options(
             &[
-                ContentPart::ImageDataUrl(image_data_url()),
-                ContentPart::VideoSource(video),
-                ContentPart::Text("SGLang E2E caption".into()),
+                MultimodalPart::ImageDataUrl(image_data_url()),
+                MultimodalPart::VideoSource(video),
+                MultimodalPart::Text("SGLang E2E caption".into()),
             ],
-            &options,
+            options,
         )
         .await
         .unwrap_or_else(|error| panic!("SGLang text-image-video embedding failed: {error:?}"));
-    validate_response(
+    validate_embedding_response(
         &mixed,
         Provider::Sglang,
         DimensionMode::Native,
-        1,
         expected_dimensions,
         &mut fixed_space,
     );
@@ -586,7 +603,7 @@ async fn dashscope_e2e(
     if allow_remote_http_name.is_some_and(allow_remote_http) {
         config = config.allow_remote_http(true);
     }
-    let client = Client::dashscope(config)
+    let client = Client::new(config)
         .unwrap_or_else(|error| panic!("DashScope client construction failed: {error:?}"));
     exercise_provider(
         &client,

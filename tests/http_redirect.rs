@@ -25,14 +25,14 @@ use fusion_embedding::LlamaCppConfig;
 use fusion_embedding::SglangConfig;
 #[cfg(feature = "vllm")]
 use fusion_embedding::VllmConfig;
-use fusion_embedding::{Client, EmbedOptions, Error};
+use fusion_embedding::{Client, EmbedOptions, Error, Provider};
 #[cfg(feature = "dashscope")]
 use secrecy::SecretString;
 use url::Url;
 
 #[cfg(feature = "vllm")]
 fn client(endpoint: Url) -> Client {
-    Client::vllm(
+    Client::new(
         VllmConfig::new(
             endpoint,
             "configured-model",
@@ -46,7 +46,7 @@ fn client(endpoint: Url) -> Client {
 
 #[cfg(feature = "llama-cpp")]
 fn llama_client(endpoint: Url) -> Client {
-    Client::llama_cpp(
+    Client::new(
         LlamaCppConfig::new(
             endpoint,
             "identity-only-model",
@@ -62,7 +62,7 @@ fn llama_client(endpoint: Url) -> Client {
 #[cfg(feature = "dashscope")]
 fn dashscope_client(mut endpoint: Url) -> Client {
     endpoint.set_path("/api/native/embeddings");
-    Client::dashscope(
+    Client::new(
         DashScopeConfig::new(
             endpoint,
             "dashscope-model",
@@ -77,7 +77,7 @@ fn dashscope_client(mut endpoint: Url) -> Client {
 
 #[cfg(feature = "sglang")]
 fn sglang_client(endpoint: Url) -> Client {
-    Client::sglang(
+    Client::new(
         SglangConfig::new(
             endpoint,
             "sglang-model",
@@ -87,6 +87,30 @@ fn sglang_client(endpoint: Url) -> Client {
         .unwrap(),
     )
     .unwrap()
+}
+
+#[test]
+fn new_constructs_enabled_backends_with_their_provider() {
+    #[cfg(feature = "vllm")]
+    assert_eq!(
+        client(Url::parse("http://127.0.0.1:9/").unwrap()).provider(),
+        Provider::Vllm
+    );
+    #[cfg(feature = "llama-cpp")]
+    assert_eq!(
+        llama_client(Url::parse("http://127.0.0.1:9/").unwrap()).provider(),
+        Provider::LlamaCpp
+    );
+    #[cfg(feature = "dashscope")]
+    assert_eq!(
+        dashscope_client(Url::parse("http://127.0.0.1:9/").unwrap()).provider(),
+        Provider::DashScope
+    );
+    #[cfg(feature = "sglang")]
+    assert_eq!(
+        sglang_client(Url::parse("http://127.0.0.1:9/").unwrap()).provider(),
+        Provider::Sglang
+    );
 }
 
 async fn assert_redirect_not_followed<F>(status: &'static str, make_client: F)
@@ -120,9 +144,9 @@ where
 
     let client = make_client(endpoint);
     let result = client
-        .embed_texts(
+        .embed_texts_with_options(
             &["first".to_owned(), "second".to_owned()],
-            &EmbedOptions::default(),
+            EmbedOptions::default(),
         )
         .await;
     let (request, ()) = server.join().unwrap();

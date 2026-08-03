@@ -5,7 +5,7 @@ mod common;
 use std::num::NonZeroUsize;
 
 use common::*;
-use fusion_embedding::{Client, ContentPart, EmbedOptions, Error, Provider, SglangConfig};
+use fusion_embedding::{Client, EmbedOptions, Error, MultimodalPart, Provider, SglangConfig};
 use secrecy::SecretString;
 use serde_json::json;
 use url::Url;
@@ -27,7 +27,7 @@ fn client(endpoint: Url, api_key: bool) -> Client {
     } else {
         config
     };
-    Client::sglang(config).unwrap()
+    Client::new(config).unwrap()
 }
 
 fn png_data_url() -> String {
@@ -48,7 +48,7 @@ async fn structured_text_auth_and_oai_response_contract() {
         write_chunked(stream, "200 OK", &[("x-request-id", "request-id")], body, 7).unwrap()
     });
     let response = client(endpoint, true)
-        .embed_texts(&["first".into(), "second".into()], &EmbedOptions::default())
+        .embed_texts_with_options(&["first", "second"], EmbedOptions::default())
         .await
         .unwrap();
     let (request, ()) = server.join().unwrap();
@@ -80,20 +80,20 @@ async fn structured_text_auth_and_oai_response_contract() {
 async fn image_video_and_combined_inputs_match_schema() {
     for (parts, expected) in [
         (
-            vec![ContentPart::ImageDataUrl(png_data_url())],
+            vec![MultimodalPart::ImageDataUrl(png_data_url())],
             json!({"image": png_data_url().split_once(',').unwrap().1}),
         ),
         (
-            vec![ContentPart::VideoSource(
+            vec![MultimodalPart::VideoSource(
                 "https://media.example/video.mp4".into(),
             )],
             json!({"video":"https://media.example/video.mp4"}),
         ),
         (
             vec![
-                ContentPart::ImageDataUrl(png_data_url()),
-                ContentPart::VideoSource("video-base64".into()),
-                ContentPart::Text("caption".into()),
+                MultimodalPart::ImageDataUrl(png_data_url()),
+                MultimodalPart::VideoSource("video-base64".into()),
+                MultimodalPart::Text("caption".into()),
             ],
             json!({"text":"caption","image":png_data_url().split_once(',').unwrap().1,"video":"video-base64"}),
         ),
@@ -102,7 +102,7 @@ async fn image_video_and_combined_inputs_match_schema() {
         let (endpoint, server) =
             spawn_server(move |stream| write_chunked(stream, "200 OK", &[], body, 8).unwrap());
         client(endpoint, false)
-            .embed_fusion(&parts, &EmbedOptions::default())
+            .embed_multimodal_with_options(&parts, EmbedOptions::default())
             .await
             .unwrap();
         let (request, ()) = server.join().unwrap();
@@ -116,37 +116,50 @@ async fn image_video_and_combined_inputs_match_schema() {
 #[tokio::test]
 async fn noncanonical_and_duplicate_fusion_parts_are_rejected() {
     let image = png_data_url();
+    let error = client(Url::parse("http://127.0.0.1:9/").unwrap(), false)
+        .embed_multimodal_with_options(
+            &[
+                MultimodalPart::ImageDataUrl(image.clone()),
+                MultimodalPart::ImageDataUrl(image),
+            ],
+            EmbedOptions::default(),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        Error::Unsupported {
+            provider: Provider::Sglang,
+            feature: "multiple images in one embedding input",
+        }
+    ));
     for parts in [
         vec![
-            ContentPart::ImageDataUrl(image.clone()),
-            ContentPart::ImageDataUrl(image),
+            MultimodalPart::VideoSource("one".into()),
+            MultimodalPart::VideoSource("two".into()),
+        ],
+        vec![MultimodalPart::VideoSource(" ".into())],
+        vec![
+            MultimodalPart::Text("caption".into()),
+            MultimodalPart::ImageDataUrl(png_data_url()),
         ],
         vec![
-            ContentPart::VideoSource("one".into()),
-            ContentPart::VideoSource("two".into()),
-        ],
-        vec![ContentPart::VideoSource(" ".into())],
-        vec![
-            ContentPart::Text("caption".into()),
-            ContentPart::ImageDataUrl(png_data_url()),
+            MultimodalPart::VideoSource("video".into()),
+            MultimodalPart::ImageDataUrl(png_data_url()),
         ],
         vec![
-            ContentPart::VideoSource("video".into()),
-            ContentPart::ImageDataUrl(png_data_url()),
+            MultimodalPart::ImageDataUrl(png_data_url()),
+            MultimodalPart::Text("caption".into()),
+            MultimodalPart::VideoSource("video".into()),
         ],
         vec![
-            ContentPart::ImageDataUrl(png_data_url()),
-            ContentPart::Text("caption".into()),
-            ContentPart::VideoSource("video".into()),
+            MultimodalPart::Text("first".into()),
+            MultimodalPart::Text("second".into()),
         ],
-        vec![
-            ContentPart::Text("first".into()),
-            ContentPart::Text("second".into()),
-        ],
-        vec![ContentPart::Text(String::new())],
+        vec![MultimodalPart::Text(String::new())],
     ] {
         let error = client(Url::parse("http://127.0.0.1:9/").unwrap(), false)
-            .embed_fusion(&parts, &EmbedOptions::default())
+            .embed_multimodal_with_options(&parts, EmbedOptions::default())
             .await
             .unwrap_err();
         assert!(matches!(error, Error::InvalidInput { .. }));
@@ -167,7 +180,7 @@ async fn api_error_and_dimension_mismatch_are_validated() {
     });
     assert!(matches!(
         client(endpoint, false)
-            .embed_texts(&["x".into()], &EmbedOptions::default())
+            .embed_texts_with_options(&["x"], EmbedOptions::default())
             .await,
         Err(Error::Api { .. })
     ));
@@ -184,7 +197,7 @@ async fn api_error_and_dimension_mismatch_are_validated() {
     });
     assert!(matches!(
         client(endpoint, false)
-            .embed_texts(&["x".into()], &EmbedOptions::default())
+            .embed_texts_with_options(&["x"], EmbedOptions::default())
             .await,
         Err(Error::Dimension { .. })
     ));

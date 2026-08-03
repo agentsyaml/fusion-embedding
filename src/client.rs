@@ -43,7 +43,10 @@ use crate::transport::{
 };
 #[cfg(any(feature = "vllm", feature = "llama-cpp", feature = "sglang"))]
 use crate::validation::{IndexedEmbedding, validate_embeddings};
-use crate::{ContentPart, EmbedOptions, EmbeddingResponse, EmbeddingSpace, Error, Provider};
+use crate::{
+    BatchEmbeddingResponse, EmbedOptions, EmbeddingResponse, EmbeddingSpace, Error, MultimodalPart,
+    Provider,
+};
 #[cfg(any(feature = "vllm", feature = "llama-cpp", feature = "sglang"))]
 use crate::{Diagnostics, Usage};
 
@@ -64,6 +67,58 @@ pub struct Client {
     backend: Backend,
     pub(crate) space: EmbeddingSpace,
     request_timeout: Duration,
+}
+
+/// Backend-specific configuration accepted by [`Client::new`].
+pub enum BackendConfig {
+    #[cfg(feature = "vllm")]
+    Vllm(VllmConfig),
+    #[cfg(feature = "llama-cpp")]
+    LlamaCpp(LlamaCppConfig),
+    #[cfg(feature = "dashscope")]
+    DashScope(DashScopeConfig),
+    #[cfg(feature = "sglang")]
+    Sglang(SglangConfig),
+}
+
+#[cfg(feature = "vllm")]
+impl From<VllmConfig> for BackendConfig {
+    fn from(config: VllmConfig) -> Self {
+        Self::Vllm(config)
+    }
+}
+#[cfg(feature = "llama-cpp")]
+impl From<LlamaCppConfig> for BackendConfig {
+    fn from(config: LlamaCppConfig) -> Self {
+        Self::LlamaCpp(config)
+    }
+}
+#[cfg(feature = "dashscope")]
+impl From<DashScopeConfig> for BackendConfig {
+    fn from(config: DashScopeConfig) -> Self {
+        Self::DashScope(config)
+    }
+}
+#[cfg(feature = "sglang")]
+impl From<SglangConfig> for BackendConfig {
+    fn from(config: SglangConfig) -> Self {
+        Self::Sglang(config)
+    }
+}
+
+impl fmt::Debug for BackendConfig {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            #[cfg(feature = "vllm")]
+            Self::Vllm(_) => f.write_str("BackendConfig::Vllm(<redacted>)"),
+            #[cfg(feature = "llama-cpp")]
+            Self::LlamaCpp(_) => f.write_str("BackendConfig::LlamaCpp(<redacted>)"),
+            #[cfg(feature = "dashscope")]
+            Self::DashScope(_) => f.write_str("BackendConfig::DashScope(<redacted>)"),
+            #[cfg(feature = "sglang")]
+            Self::Sglang(_) => f.write_str("BackendConfig::Sglang(<redacted>)"),
+        }
+    }
 }
 
 #[cfg(any(
@@ -130,8 +185,21 @@ impl Backend {
     feature = "sglang"
 ))]
 impl Client {
+    pub fn new(config: impl Into<BackendConfig>) -> Result<Self, Error> {
+        match config.into() {
+            #[cfg(feature = "vllm")]
+            BackendConfig::Vllm(config) => Self::from_vllm(config),
+            #[cfg(feature = "llama-cpp")]
+            BackendConfig::LlamaCpp(config) => Self::from_llama_cpp(config),
+            #[cfg(feature = "dashscope")]
+            BackendConfig::DashScope(config) => Self::from_dashscope(config),
+            #[cfg(feature = "sglang")]
+            BackendConfig::Sglang(config) => Self::from_sglang(config),
+        }
+    }
+
     #[cfg(feature = "vllm")]
-    pub fn vllm(config: VllmConfig) -> Result<Self, Error> {
+    fn from_vllm(config: VllmConfig) -> Result<Self, Error> {
         validate_transport(&config.endpoint, config.allow_remote_http)?;
 
         let mut headers = HeaderMap::new();
@@ -171,7 +239,7 @@ impl Client {
     }
 
     #[cfg(feature = "llama-cpp")]
-    pub fn llama_cpp(config: LlamaCppConfig) -> Result<Self, Error> {
+    fn from_llama_cpp(config: LlamaCppConfig) -> Result<Self, Error> {
         validate_transport(&config.endpoint, config.allow_remote_http)?;
         let http = reqwest::Client::builder()
             .connect_timeout(config.connect_timeout)
@@ -199,7 +267,7 @@ impl Client {
     }
 
     #[cfg(feature = "dashscope")]
-    pub fn dashscope(config: DashScopeConfig) -> Result<Self, Error> {
+    fn from_dashscope(config: DashScopeConfig) -> Result<Self, Error> {
         validate_transport(&config.endpoint, config.allow_remote_http)?;
         let mut value =
             HeaderValue::from_str(&format!("Bearer {}", config.api_key.expose_secret())).map_err(
@@ -237,7 +305,7 @@ impl Client {
     }
 
     #[cfg(feature = "sglang")]
-    pub fn sglang(config: SglangConfig) -> Result<Self, Error> {
+    fn from_sglang(config: SglangConfig) -> Result<Self, Error> {
         validate_transport(&config.endpoint, config.allow_remote_http)?;
         let mut headers = HeaderMap::new();
         if let Some(api_key) = config.api_key {
@@ -271,22 +339,31 @@ impl Client {
         })
     }
 
-    pub async fn embed_texts(
+    pub async fn embed_texts<S: AsRef<str>>(
         &self,
-        texts: &[String],
-        options: &EmbedOptions,
-    ) -> Result<EmbeddingResponse, Error> {
+        texts: &[S],
+    ) -> Result<BatchEmbeddingResponse, Error> {
+        self.embed_texts_with_options(texts, EmbedOptions::default())
+            .await
+    }
+
+    pub async fn embed_texts_with_options<S: AsRef<str>>(
+        &self,
+        texts: &[S],
+        options: EmbedOptions,
+    ) -> Result<BatchEmbeddingResponse, Error> {
         if texts.is_empty() {
             return Err(Error::InvalidInput {
                 message: "text input must not be empty".into(),
             });
         }
+        let texts: Vec<String> = texts.iter().map(|text| text.as_ref().to_owned()).collect();
         match &self.backend {
             #[cfg(feature = "vllm")]
             Backend::Vllm {
                 requested_dimensions,
             } => {
-                let input = format_qwen_text_inputs(texts);
+                let input = format_qwen_text_inputs(&texts);
                 let payload = TextRequest {
                     model: &self.space.configured_model,
                     input: &input,
@@ -294,18 +371,18 @@ impl Client {
                     normalize: true,
                     dimensions: requested_dimensions.map(NonZeroUsize::get),
                 };
-                self.execute(&payload, texts.len(), options, ResponseKind::Oai)
+                self.execute(&payload, texts.len(), &options, ResponseKind::Oai)
                     .await
             }
             #[cfg(feature = "llama-cpp")]
             Backend::LlamaCpp { .. } => {
-                let input = format_qwen_text_inputs(texts);
+                let input = format_qwen_text_inputs(&texts);
                 let payload = LlamaTextRequest {
                     input: &input,
                     encoding_format: EncodingFormat::Float,
                     embd_normalize: 2,
                 };
-                self.execute(&payload, texts.len(), options, ResponseKind::Oai)
+                self.execute(&payload, texts.len(), &options, ResponseKind::Oai)
                     .await
             }
             #[cfg(feature = "dashscope")]
@@ -321,32 +398,40 @@ impl Client {
                 }
                 let payload = build_dashscope_text_request(
                     &self.space.configured_model,
-                    texts,
+                    &texts,
                     *requested_dimensions,
                 );
                 self.execute(
                     &payload,
                     texts.len(),
-                    options,
+                    &options,
                     ResponseKind::DashScope(DashScopeOperation::Text),
                 )
                 .await
             }
             #[cfg(feature = "sglang")]
             Backend::Sglang => {
-                let payload = build_sglang_text_request(&self.space.configured_model, texts);
-                self.execute(&payload, texts.len(), options, ResponseKind::Oai)
+                let payload = build_sglang_text_request(&self.space.configured_model, &texts);
+                self.execute(&payload, texts.len(), &options, ResponseKind::Oai)
                     .await
             }
         }
     }
 
-    pub async fn embed_fusion(
+    pub async fn embed_multimodal(
         &self,
-        parts: &[ContentPart],
-        options: &EmbedOptions,
+        parts: &[MultimodalPart],
     ) -> Result<EmbeddingResponse, Error> {
-        match &self.backend {
+        self.embed_multimodal_with_options(parts, EmbedOptions::default())
+            .await
+    }
+
+    pub async fn embed_multimodal_with_options(
+        &self,
+        parts: &[MultimodalPart],
+        options: EmbedOptions,
+    ) -> Result<EmbeddingResponse, Error> {
+        let response = match &self.backend {
             #[cfg(feature = "vllm")]
             Backend::Vllm {
                 requested_dimensions,
@@ -356,12 +441,12 @@ impl Client {
                     parts,
                     *requested_dimensions,
                 )?;
-                self.execute(&payload, 1, options, ResponseKind::Oai).await
+                self.execute(&payload, 1, &options, ResponseKind::Oai).await
             }
             #[cfg(feature = "llama-cpp")]
             Backend::LlamaCpp { media_marker } => {
                 let payload = build_llama_fusion_request(media_marker, parts)?;
-                self.execute(&payload, 1, options, ResponseKind::Oai).await
+                self.execute(&payload, 1, &options, ResponseKind::Oai).await
             }
             #[cfg(feature = "dashscope")]
             Backend::DashScope {
@@ -375,7 +460,7 @@ impl Client {
                 self.execute(
                     &payload,
                     1,
-                    options,
+                    &options,
                     ResponseKind::DashScope(DashScopeOperation::Fusion),
                 )
                 .await
@@ -383,9 +468,28 @@ impl Client {
             #[cfg(feature = "sglang")]
             Backend::Sglang => {
                 let payload = build_sglang_fusion_request(&self.space.configured_model, parts)?;
-                self.execute(&payload, 1, options, ResponseKind::Oai).await
+                self.execute(&payload, 1, &options, ResponseKind::Oai).await
             }
-        }
+        }?;
+        let BatchEmbeddingResponse {
+            mut embeddings,
+            space,
+            usage,
+            diagnostics,
+        } = response;
+        let embedding = embeddings.pop().ok_or_else(|| Error::InvalidResponse {
+            message: "multimodal response did not contain an embedding".into(),
+        })?;
+        Ok(EmbeddingResponse {
+            embedding,
+            space,
+            usage,
+            diagnostics,
+        })
+    }
+
+    pub fn provider(&self) -> Provider {
+        self.backend.provider()
     }
 
     async fn execute<T: Serialize + ?Sized>(
@@ -394,7 +498,7 @@ impl Client {
         expected_count: usize,
         options: &EmbedOptions,
         response_kind: ResponseKind,
-    ) -> Result<EmbeddingResponse, Error> {
+    ) -> Result<BatchEmbeddingResponse, Error> {
         let body = serde_json::to_vec(payload).map_err(|_| Error::InvalidInput {
             message: "request cannot be serialized".into(),
         })?;
@@ -449,7 +553,7 @@ impl Client {
                     expected_count,
                     self.space.expected_dimensions.get(),
                 )?;
-                Ok(EmbeddingResponse {
+                Ok(BatchEmbeddingResponse {
                     embeddings,
                     space: self.space.clone(),
                     usage: Usage {
@@ -508,7 +612,6 @@ struct WireUsage {
 #[cfg(all(test, feature = "vllm", feature = "llama-cpp"))]
 mod tests {
     use super::*;
-    use crate::ContentPart;
     use crate::backend::{llama_cpp::LlamaCppConfig, vllm::VllmConfig};
     use secrecy::SecretString;
 
@@ -526,13 +629,13 @@ mod tests {
         .unwrap()
         .with_server_dimensions(NonZeroUsize::new(2).unwrap());
         assert!(!format!("{config:?}").contains(secret));
-        let client = Client::vllm(config).unwrap();
+        let client = Client::new(config).unwrap();
         assert!(!format!("{client:?}").contains(secret));
-        let image = ContentPart::ImageDataUrl("data:image/png;base64,SECRET".into());
+        let image = MultimodalPart::ImageDataUrl("data:image/png;base64,SECRET".into());
         assert!(!format!("{image:?}").contains("SECRET"));
-        let text = ContentPart::Text("ordinary-text-secret".into());
+        let text = MultimodalPart::Text("ordinary-text-secret".into());
         assert!(!format!("{text:?}").contains("ordinary-text-secret"));
-        let video = ContentPart::VideoSource("video-source-secret".into());
+        let video = MultimodalPart::VideoSource("video-source-secret".into());
         assert!(!format!("{video:?}").contains("video-source-secret"));
 
         let diagnostics = Diagnostics {
@@ -544,7 +647,7 @@ mod tests {
         assert!(!diagnostics_debug.contains("response-secret"));
 
         let response = EmbeddingResponse {
-            embeddings: vec![vec![0.123456, 0.987654]],
+            embedding: vec![0.123456, 0.987654],
             space: EmbeddingSpace {
                 provider: Provider::Vllm,
                 configured_model: "m".into(),
@@ -569,7 +672,7 @@ mod tests {
         )
         .unwrap();
         assert!(!format!("{llama_config:?}").contains(marker));
-        let llama = Client::llama_cpp(llama_config).unwrap();
+        let llama = Client::new(llama_config).unwrap();
         let client_debug = format!("{llama:?}");
         assert!(client_debug.contains("LlamaCpp"));
         assert!(!client_debug.contains(marker));

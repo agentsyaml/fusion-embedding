@@ -6,15 +6,29 @@ pub struct EmbedOptions {
     pub timeout: Option<Duration>,
 }
 
-/// An ordered fusion input part.
+/// An ordered multimodal input part.
 #[derive(Clone)]
-pub enum ContentPart {
+pub enum MultimodalPart {
     Text(String),
     ImageDataUrl(String),
     VideoSource(String),
 }
 
-impl fmt::Debug for ContentPart {
+impl MultimodalPart {
+    pub fn text(value: impl Into<String>) -> Self {
+        Self::Text(value.into())
+    }
+
+    pub fn image_data_url(value: impl Into<String>) -> Self {
+        Self::ImageDataUrl(value.into())
+    }
+
+    pub fn video_source(value: impl Into<String>) -> Self {
+        Self::VideoSource(value.into())
+    }
+}
+
+impl fmt::Debug for MultimodalPart {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Text(_) => f.write_str("Text(<redacted>)"),
@@ -116,16 +130,16 @@ impl Diagnostics {
     }
 }
 
-/// Provider-neutral response. Embeddings are ordered to match the input.
+/// Response for a batch of text inputs. Embeddings are ordered to match the input.
 #[derive(Clone)]
-pub struct EmbeddingResponse {
+pub struct BatchEmbeddingResponse {
     pub(crate) embeddings: Vec<Vec<f32>>,
     pub(crate) space: EmbeddingSpace,
     pub(crate) usage: Usage,
     pub(crate) diagnostics: Diagnostics,
 }
 
-impl EmbeddingResponse {
+impl BatchEmbeddingResponse {
     pub fn embeddings(&self) -> &[Vec<f32>] {
         &self.embeddings
     }
@@ -147,11 +161,49 @@ impl EmbeddingResponse {
     }
 }
 
-impl fmt::Debug for EmbeddingResponse {
+impl fmt::Debug for BatchEmbeddingResponse {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let dimensions: Vec<_> = self.embeddings.iter().map(Vec::len).collect();
-        f.debug_struct("EmbeddingResponse")
+        f.debug_struct("BatchEmbeddingResponse")
             .field("embedding_dimensions", &dimensions)
+            .field("space", &self.space)
+            .field("usage", &self.usage)
+            .field("diagnostics", &self.diagnostics)
+            .finish()
+    }
+}
+
+/// Response for one multimodal input.
+#[derive(Clone)]
+pub struct EmbeddingResponse {
+    pub(crate) embedding: Vec<f32>,
+    pub(crate) space: EmbeddingSpace,
+    pub(crate) usage: Usage,
+    pub(crate) diagnostics: Diagnostics,
+}
+
+impl EmbeddingResponse {
+    pub fn embedding(&self) -> &[f32] {
+        &self.embedding
+    }
+    pub fn into_embedding(self) -> Vec<f32> {
+        self.embedding
+    }
+    pub fn space(&self) -> &EmbeddingSpace {
+        &self.space
+    }
+    pub fn usage(&self) -> Usage {
+        self.usage
+    }
+    pub fn diagnostics(&self) -> &Diagnostics {
+        &self.diagnostics
+    }
+}
+
+impl fmt::Debug for EmbeddingResponse {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("EmbeddingResponse")
+            .field("embedding_dimensions", &self.embedding.len())
             .field("space", &self.space)
             .field("usage", &self.usage)
             .field("diagnostics", &self.diagnostics)

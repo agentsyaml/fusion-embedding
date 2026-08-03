@@ -8,10 +8,12 @@
 
 | Feature | 后端 | 构造方式 |
 | --- | --- | --- |
-| `vllm` | vLLM 的 OpenAI 兼容 embedding 接口 | `Client::vllm(VllmConfig)` |
-| `llama-cpp` | llama.cpp embedding 接口 | `Client::llama_cpp(LlamaCppConfig)` |
-| `dashscope` | DashScope 原生多模态 embedding 接口 | `Client::dashscope(DashScopeConfig)` |
-| `sglang` | SGLang v0.5.11+ 标准 embedding 接口 | `Client::sglang(SglangConfig)` |
+| `vllm` | vLLM 的 OpenAI 兼容 embedding 接口 | `Client::new(VllmConfig)` |
+| `llama-cpp` | llama.cpp embedding 接口 | `Client::new(LlamaCppConfig)` |
+| `dashscope` | DashScope 原生多模态 embedding 接口 | `Client::new(DashScopeConfig)` |
+| `sglang` | SGLang v0.5.11+ 标准 embedding 接口 | `Client::new(SglangConfig)` |
+
+配置类型决定后端。
 
 默认启用 vLLM、llama.cpp 与 DashScope；SGLang 需要显式启用。只选择 SGLang 时：
 
@@ -22,9 +24,16 @@ fusion-embedding = { version = "0.1", default-features = false, features = ["sgl
 
 ## 范围与限制
 
-公共 API 提供非空文本批量调用 `embed_texts`，以及接受 `ContentPart::{Text, ImageDataUrl, VideoSource}` 的 `embed_fusion`。图片**只能是规范的 PNG 或 JPEG base64 data URL**，库不做文件 I/O。`VideoSource` 仅供 SGLang 使用，原样传递服务端可访问 URL/path 或裸 base64；不承诺 data-video URL。
+`embed_texts(&[S])` 返回 `BatchEmbeddingResponse`；`embed_multimodal(&[MultimodalPart])` 将全部 part 融合为一个 `EmbeddingResponse`。part 支持 `Text`、`ImageDataUrl`、`VideoSource` 及小写便捷构造。
 
-vLLM 与 llama.cpp 的图文调用要求恰好一张图片。DashScope 最多支持五张图片，内容项为 1 到 20 个。SGLang 标准端点每个向量最多一张图片和一个视频；runtime 可能支持更多，但公开 endpoint schema 无法表达同一 item 的多图或多视频。客户端会固定模型标识、pipeline ID 与预期维度；`EmbedOptions` 仅能修改单次调用的超时。
+| 后端 | 单个多模态向量图片数 | 限制 |
+| --- | --- | --- |
+| vLLM | 一张或多张，保序 | 部署须配置足够的 multimodal image limit，实际模型须支持多图。 |
+| llama.cpp | 一张或多张，保序 | 模型和 mmproj 须支持多图。 |
+| DashScope | 最多 5 张 | 1–20 个 part。 |
+| SGLang standard endpoint | 最多 1 张 | 不支持同一 item 多图；最多一个视频；顺序 `image → video → text`。 |
+
+需要按次传递 `EmbedOptions` 时，使用按值的 `embed_texts_with_options` 或 `embed_multimodal_with_options`。
 
 SGLang fusion parts 必须采用 `image → video → text` 的 canonical 顺序。每类均可省略，但最多一个；非 canonical 或重复 part 会被拒绝。
 
@@ -47,18 +56,18 @@ url = "2"
 ```rust,no_run
 use std::num::NonZeroUsize;
 
-use fusion_embedding::{Client, EmbedOptions, VllmConfig};
+use fusion_embedding::{Client, VllmConfig};
 use url::Url;
 
 # async fn example() -> Result<(), Box<dyn std::error::Error>> {
-let client = Client::vllm(VllmConfig::new(
+let client = Client::new(VllmConfig::new(
     Url::parse("http://127.0.0.1:8000/v1/models")?,
     "qwen3-vl-embedding",
     "my-deployment-revision",
     NonZeroUsize::new(2048).unwrap(),
 )?)?;
 let response = client
-    .embed_texts(&["一段简短文本".into()], &EmbedOptions::default())
+    .embed_texts(&["一段简短文本"])
     .await?;
 println!("{}", response.embeddings()[0].len());
 # Ok(())
@@ -68,15 +77,14 @@ println!("{}", response.embeddings()[0].len());
 图文融合时，在库外构造 data URL，并按需要保留内容顺序：
 
 ```rust,no_run
-# use fusion_embedding::{Client, ContentPart, EmbedOptions};
+# use fusion_embedding::{Client, MultimodalPart};
 # async fn example(client: Client, image_data_url: String) -> Result<(), fusion_embedding::Error> {
 let response = client
-    .embed_fusion(
+    .embed_multimodal(
         &[
-            ContentPart::ImageDataUrl(image_data_url),
-            ContentPart::Text("一个红色方块".into()),
+            MultimodalPart::image_data_url(image_data_url),
+            MultimodalPart::text("一个红色方块"),
         ],
-        &EmbedOptions::default(),
     )
     .await?;
 # let _ = response;
@@ -99,7 +107,7 @@ let response = client
 
 ## 响应、错误与安全默认值
 
-`EmbeddingResponse` 提供有序的 `embeddings()`、`space()`、`usage()` 与 `diagnostics()`。`EmbeddingSpace` 记录 provider、配置的模型、pipeline ID、协议版本、维度模式和预期维度。`Usage` 以及请求/响应 ID 都可能不存在。
+`BatchEmbeddingResponse` 提供 `embeddings()`/`into_embeddings()`；`EmbeddingResponse` 提供 `embedding()`/`into_embedding()`；两者均提供 `space()`、`usage()` 与 `diagnostics()` 元数据。
 
 `Error` 区分配置或输入错误、传输失败、provider API 错误、无效响应与维度不匹配。成功响应会验证索引完整且不重复、维度符合预期、向量有限且非零，随后由库进行 L2 归一化。
 

@@ -3,12 +3,19 @@ use std::{fmt, time::Duration};
 use reqwest::StatusCode;
 use thiserror::Error as ThisError;
 
+use crate::Provider;
+
 #[derive(ThisError)]
 pub enum Error {
     #[error("invalid configuration: {message}")]
     Config { message: String },
     #[error("invalid input: {message}")]
     InvalidInput { message: String },
+    #[error("{provider:?} does not support {feature}")]
+    Unsupported {
+        provider: Provider,
+        feature: &'static str,
+    },
     #[error("HTTP transport failed: {source}")]
     Transport {
         #[source]
@@ -36,6 +43,11 @@ impl fmt::Debug for Error {
             Self::InvalidInput { message } => f
                 .debug_struct("InvalidInput")
                 .field("message", message)
+                .finish(),
+            Self::Unsupported { provider, feature } => f
+                .debug_struct("Unsupported")
+                .field("provider", provider)
+                .field("feature", feature)
                 .finish(),
             Self::Transport { .. } => f.debug_struct("Transport").finish_non_exhaustive(),
             Self::Api {
