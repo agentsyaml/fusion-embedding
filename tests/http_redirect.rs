@@ -1,4 +1,9 @@
-#![cfg(any(feature = "vllm", feature = "llama-cpp", feature = "dashscope"))]
+#![cfg(any(
+    feature = "vllm",
+    feature = "llama-cpp",
+    feature = "dashscope",
+    feature = "sglang"
+))]
 
 mod common;
 
@@ -16,6 +21,8 @@ use common::*;
 use fusion_embedding::DashScopeConfig;
 #[cfg(feature = "llama-cpp")]
 use fusion_embedding::LlamaCppConfig;
+#[cfg(feature = "sglang")]
+use fusion_embedding::SglangConfig;
 #[cfg(feature = "vllm")]
 use fusion_embedding::VllmConfig;
 use fusion_embedding::{Client, EmbedOptions, Error};
@@ -62,6 +69,20 @@ fn dashscope_client(mut endpoint: Url) -> Client {
             "dashscope-test-pipeline",
             NonZeroUsize::new(2).unwrap(),
             SecretString::from("dashscope-test-key".to_owned()),
+        )
+        .unwrap(),
+    )
+    .unwrap()
+}
+
+#[cfg(feature = "sglang")]
+fn sglang_client(endpoint: Url) -> Client {
+    Client::sglang(
+        SglangConfig::new(
+            endpoint,
+            "sglang-model",
+            "sglang-pipeline",
+            NonZeroUsize::new(2).unwrap(),
         )
         .unwrap(),
     )
@@ -126,5 +147,7 @@ async fn redirects_are_api_errors_and_never_reach_the_location() {
         assert_redirect_not_followed(status, llama_client).await;
         #[cfg(feature = "dashscope")]
         assert_redirect_not_followed(status, dashscope_client).await;
+        #[cfg(feature = "sglang")]
+        assert_redirect_not_followed(status, sglang_client).await;
     }
 }

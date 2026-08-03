@@ -200,6 +200,11 @@ pub(crate) fn build_fusion_request<'a>(
                     image_url: ImageUrl { url },
                 });
             }
+            ContentPart::VideoSource(_) => {
+                return Err(Error::InvalidInput {
+                    message: "vLLM does not support VideoSource".into(),
+                });
+            }
         }
     }
     if image_count != 1 {

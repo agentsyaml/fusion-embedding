@@ -2,49 +2,61 @@
 use std::num::NonZeroUsize;
 use std::{fmt, time::Duration};
 
-#[cfg(any(feature = "vllm", feature = "dashscope"))]
+#[cfg(any(feature = "vllm", feature = "dashscope", feature = "sglang"))]
 use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
 use reqwest::{
     header::{CONTENT_TYPE, RETRY_AFTER},
     redirect::Policy,
 };
-#[cfg(any(feature = "vllm", feature = "dashscope"))]
+#[cfg(any(feature = "vllm", feature = "dashscope", feature = "sglang"))]
 use secrecy::ExposeSecret;
-#[cfg(any(feature = "vllm", feature = "llama-cpp"))]
+#[cfg(any(feature = "vllm", feature = "llama-cpp", feature = "sglang"))]
 use serde::Deserialize;
 use serde::Serialize;
 use url::Url;
 
-#[cfg(feature = "llama-cpp")]
+#[cfg(any(feature = "llama-cpp", feature = "sglang"))]
 use crate::DimensionMode;
+#[cfg(any(feature = "vllm", feature = "llama-cpp"))]
+use crate::backend::EncodingFormat;
 #[cfg(feature = "dashscope")]
 use crate::backend::dashscope::{
     self, DashScopeConfig, DashScopeOperation, MAX_DASHSCOPE_CONTENTS,
     build_dashscope_fusion_request, build_dashscope_text_request, parse_dashscope_response,
 };
+#[cfg(any(feature = "vllm", feature = "llama-cpp"))]
+use crate::backend::format_qwen_text_inputs;
 #[cfg(feature = "llama-cpp")]
 use crate::backend::llama_cpp::{
     self, LlamaCppConfig, LlamaTextRequest, build_llama_fusion_request,
 };
+#[cfg(feature = "sglang")]
+use crate::backend::sglang::{
+    self, SglangConfig, build_fusion_request as build_sglang_fusion_request,
+    build_text_request as build_sglang_text_request,
+};
 #[cfg(feature = "vllm")]
 use crate::backend::vllm::{self, TextRequest, VllmConfig, build_fusion_request};
-#[cfg(any(feature = "vllm", feature = "llama-cpp"))]
-use crate::backend::{EncodingFormat, format_qwen_text_inputs};
 use crate::transport::{
     MAX_DIAGNOSTIC_CHARS, api_error, parse_retry_after, read_limited, sanitize_metadata,
     validate_transport,
 };
-#[cfg(any(feature = "vllm", feature = "llama-cpp"))]
+#[cfg(any(feature = "vllm", feature = "llama-cpp", feature = "sglang"))]
 use crate::validation::{IndexedEmbedding, validate_embeddings};
 use crate::{ContentPart, EmbedOptions, EmbeddingResponse, EmbeddingSpace, Error, Provider};
-#[cfg(any(feature = "vllm", feature = "llama-cpp"))]
+#[cfg(any(feature = "vllm", feature = "llama-cpp", feature = "sglang"))]
 use crate::{Diagnostics, Usage};
 
 const MAX_RESPONSE_JSON_BYTES: usize = 8 * 1024 * 1024;
 const MAX_ERROR_BYTES: usize = 64 * 1024;
 
 /// Reusable embedding client. Its backend, endpoint, profile, and vector space are fixed.
-#[cfg(any(feature = "vllm", feature = "llama-cpp", feature = "dashscope"))]
+#[cfg(any(
+    feature = "vllm",
+    feature = "llama-cpp",
+    feature = "dashscope",
+    feature = "sglang"
+))]
 #[derive(Clone)]
 pub struct Client {
     http: reqwest::Client,
@@ -54,7 +66,12 @@ pub struct Client {
     request_timeout: Duration,
 }
 
-#[cfg(any(feature = "vllm", feature = "llama-cpp", feature = "dashscope"))]
+#[cfg(any(
+    feature = "vllm",
+    feature = "llama-cpp",
+    feature = "dashscope",
+    feature = "sglang"
+))]
 #[derive(Clone)]
 enum Backend {
     #[cfg(feature = "vllm")]
@@ -67,18 +84,30 @@ enum Backend {
     DashScope {
         requested_dimensions: Option<NonZeroUsize>,
     },
+    #[cfg(feature = "sglang")]
+    Sglang,
 }
 
-#[cfg(any(feature = "vllm", feature = "llama-cpp", feature = "dashscope"))]
+#[cfg(any(
+    feature = "vllm",
+    feature = "llama-cpp",
+    feature = "dashscope",
+    feature = "sglang"
+))]
 #[derive(Clone, Copy)]
 enum ResponseKind {
-    #[cfg(any(feature = "vllm", feature = "llama-cpp"))]
+    #[cfg(any(feature = "vllm", feature = "llama-cpp", feature = "sglang"))]
     Oai,
     #[cfg(feature = "dashscope")]
     DashScope(DashScopeOperation),
 }
 
-#[cfg(any(feature = "vllm", feature = "llama-cpp", feature = "dashscope"))]
+#[cfg(any(
+    feature = "vllm",
+    feature = "llama-cpp",
+    feature = "dashscope",
+    feature = "sglang"
+))]
 impl Backend {
     fn provider(&self) -> Provider {
         match self {
@@ -88,11 +117,18 @@ impl Backend {
             Self::LlamaCpp { .. } => Provider::LlamaCpp,
             #[cfg(feature = "dashscope")]
             Self::DashScope { .. } => Provider::DashScope,
+            #[cfg(feature = "sglang")]
+            Self::Sglang => Provider::Sglang,
         }
     }
 }
 
-#[cfg(any(feature = "vllm", feature = "llama-cpp", feature = "dashscope"))]
+#[cfg(any(
+    feature = "vllm",
+    feature = "llama-cpp",
+    feature = "dashscope",
+    feature = "sglang"
+))]
 impl Client {
     #[cfg(feature = "vllm")]
     pub fn vllm(config: VllmConfig) -> Result<Self, Error> {
@@ -200,6 +236,41 @@ impl Client {
         })
     }
 
+    #[cfg(feature = "sglang")]
+    pub fn sglang(config: SglangConfig) -> Result<Self, Error> {
+        validate_transport(&config.endpoint, config.allow_remote_http)?;
+        let mut headers = HeaderMap::new();
+        if let Some(api_key) = config.api_key {
+            let mut value = HeaderValue::from_str(&format!("Bearer {}", api_key.expose_secret()))
+                .map_err(|_| Error::Config {
+                message: "API key is not valid in an Authorization header".into(),
+            })?;
+            value.set_sensitive(true);
+            headers.insert(AUTHORIZATION, value);
+        }
+        let http = reqwest::Client::builder()
+            .connect_timeout(config.connect_timeout)
+            .timeout(config.request_timeout)
+            .redirect(Policy::none())
+            .default_headers(headers)
+            .build()
+            .map_err(|source| Error::Transport { source })?;
+        Ok(Self {
+            http,
+            endpoint: config.endpoint,
+            backend: Backend::Sglang,
+            space: EmbeddingSpace {
+                provider: Provider::Sglang,
+                configured_model: config.configured_model,
+                pipeline_id: config.pipeline_id,
+                profile_revision: sglang::PROFILE_REVISION,
+                dimension_mode: DimensionMode::Native,
+                expected_dimensions: config.expected_dimensions,
+            },
+            request_timeout: config.request_timeout,
+        })
+    }
+
     pub async fn embed_texts(
         &self,
         texts: &[String],
@@ -261,6 +332,12 @@ impl Client {
                 )
                 .await
             }
+            #[cfg(feature = "sglang")]
+            Backend::Sglang => {
+                let payload = build_sglang_text_request(&self.space.configured_model, texts);
+                self.execute(&payload, texts.len(), options, ResponseKind::Oai)
+                    .await
+            }
         }
     }
 
@@ -302,6 +379,11 @@ impl Client {
                     ResponseKind::DashScope(DashScopeOperation::Fusion),
                 )
                 .await
+            }
+            #[cfg(feature = "sglang")]
+            Backend::Sglang => {
+                let payload = build_sglang_fusion_request(&self.space.configured_model, parts)?;
+                self.execute(&payload, 1, options, ResponseKind::Oai).await
             }
         }
     }
@@ -356,7 +438,7 @@ impl Client {
             ResponseKind::DashScope(operation) => {
                 parse_dashscope_response(&body, expected_count, &self.space, operation)
             }
-            #[cfg(any(feature = "vllm", feature = "llama-cpp"))]
+            #[cfg(any(feature = "vllm", feature = "llama-cpp", feature = "sglang"))]
             ResponseKind::Oai => {
                 let wire: WireResponse =
                     serde_json::from_slice(&body).map_err(|source| Error::InvalidResponse {
@@ -387,7 +469,12 @@ impl Client {
     }
 }
 
-#[cfg(any(feature = "vllm", feature = "llama-cpp", feature = "dashscope"))]
+#[cfg(any(
+    feature = "vllm",
+    feature = "llama-cpp",
+    feature = "dashscope",
+    feature = "sglang"
+))]
 impl fmt::Debug for Client {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("Client")
@@ -399,7 +486,7 @@ impl fmt::Debug for Client {
     }
 }
 
-#[cfg(any(feature = "vllm", feature = "llama-cpp"))]
+#[cfg(any(feature = "vllm", feature = "llama-cpp", feature = "sglang"))]
 #[derive(Deserialize)]
 struct WireResponse {
     data: Vec<IndexedEmbedding>,
@@ -409,7 +496,7 @@ struct WireResponse {
     id: Option<String>,
 }
 
-#[cfg(any(feature = "vllm", feature = "llama-cpp"))]
+#[cfg(any(feature = "vllm", feature = "llama-cpp", feature = "sglang"))]
 #[derive(Deserialize)]
 struct WireUsage {
     #[serde(default)]
@@ -445,6 +532,8 @@ mod tests {
         assert!(!format!("{image:?}").contains("SECRET"));
         let text = ContentPart::Text("ordinary-text-secret".into());
         assert!(!format!("{text:?}").contains("ordinary-text-secret"));
+        let video = ContentPart::VideoSource("video-source-secret".into());
+        assert!(!format!("{video:?}").contains("video-source-secret"));
 
         let diagnostics = Diagnostics {
             request_id: Some("request-secret".into()),

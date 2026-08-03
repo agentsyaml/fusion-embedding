@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-#[cfg(any(feature = "vllm", feature = "llama-cpp"))]
+#[cfg(any(feature = "vllm", feature = "llama-cpp", feature = "sglang"))]
 use serde::Serialize;
 
 pub(crate) const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -24,10 +24,12 @@ pub(crate) fn format_qwen_text_inputs(texts: &[String]) -> Vec<String> {
 pub(crate) mod dashscope;
 #[cfg(feature = "llama-cpp")]
 pub(crate) mod llama_cpp;
+#[cfg(feature = "sglang")]
+pub(crate) mod sglang;
 #[cfg(feature = "vllm")]
 pub(crate) mod vllm;
 
-#[cfg(any(feature = "vllm", feature = "llama-cpp"))]
+#[cfg(any(feature = "vllm", feature = "llama-cpp", feature = "sglang"))]
 #[derive(Clone, Copy, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum EncodingFormat {

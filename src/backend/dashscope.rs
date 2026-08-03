@@ -260,6 +260,11 @@ pub(crate) fn build_dashscope_fusion_request<'a>(
                 validate_data_url(image)?;
                 contents.push(DashScopeContent::Image { image });
             }
+            ContentPart::VideoSource(_) => {
+                return Err(Error::InvalidInput {
+                    message: "DashScope does not support VideoSource".into(),
+                });
+            }
         }
     }
     Ok(DashScopeRequest {

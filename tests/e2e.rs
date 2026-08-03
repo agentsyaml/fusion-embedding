@@ -1,4 +1,9 @@
-#![cfg(any(feature = "vllm", feature = "llama-cpp", feature = "dashscope"))]
+#![cfg(any(
+    feature = "vllm",
+    feature = "llama-cpp",
+    feature = "dashscope",
+    feature = "sglang"
+))]
 
 use std::{env, fs, num::NonZeroUsize};
 #[cfg(feature = "llama-cpp")]
@@ -9,12 +14,14 @@ use base64::{Engine as _, engine::general_purpose::STANDARD};
 use fusion_embedding::DashScopeConfig;
 #[cfg(feature = "llama-cpp")]
 use fusion_embedding::LlamaCppConfig;
+#[cfg(feature = "sglang")]
+use fusion_embedding::SglangConfig;
 #[cfg(feature = "vllm")]
 use fusion_embedding::VllmConfig;
 use fusion_embedding::{
     Client, ContentPart, DimensionMode, EmbedOptions, EmbeddingResponse, EmbeddingSpace, Provider,
 };
-#[cfg(any(feature = "vllm", feature = "dashscope"))]
+#[cfg(any(feature = "vllm", feature = "dashscope", feature = "sglang"))]
 use secrecy::SecretString;
 #[cfg(feature = "llama-cpp")]
 use serde_json::Value;
@@ -75,6 +82,14 @@ fn vllm_url() -> Url {
     let (name, value) = optional("VLLM_MODELS_URL")
         .map(|value| ("VLLM_MODELS_URL", value))
         .unwrap_or_else(|| ("VLLM_BASE_URL", required("VLLM_BASE_URL")));
+    Url::parse(&value).unwrap_or_else(|_| panic!("environment variable {name} must be a valid URL"))
+}
+
+#[cfg(feature = "sglang")]
+fn sglang_url() -> Url {
+    let (name, value) = optional("SGLANG_MODELS_URL")
+        .map(|value| ("SGLANG_MODELS_URL", value))
+        .unwrap_or_else(|| ("SGLANG_BASE_URL", required("SGLANG_BASE_URL")));
     Url::parse(&value).unwrap_or_else(|_| panic!("environment variable {name} must be a valid URL"))
 }
 
@@ -463,6 +478,74 @@ async fn vllm_e2e() {
         false,
     )
     .await;
+}
+
+#[cfg(feature = "sglang")]
+#[tokio::test]
+#[ignore = "requires an explicitly configured live SGLang v0.5.11+ endpoint"]
+async fn sglang_e2e() {
+    let expected_dimensions = dimensions("SGLANG_DIMENSIONS");
+    let remote_http_allowed = allow_remote_http("SGLANG_ALLOW_REMOTE_HTTP");
+    let mut config = SglangConfig::new(
+        sglang_url(),
+        required("SGLANG_MODEL"),
+        required("SGLANG_PIPELINE_ID"),
+        expected_dimensions,
+    )
+    .unwrap_or_else(|error| panic!("invalid SGLang E2E configuration: {error:?}"));
+    if let Some(api_key) = optional("SGLANG_API_KEY") {
+        config = config
+            .with_api_key(SecretString::from(api_key))
+            .unwrap_or_else(|error| panic!("invalid SGLang API key: {error:?}"));
+    }
+    if remote_http_allowed {
+        config = config.allow_remote_http(true);
+    }
+    let client = Client::sglang(config)
+        .unwrap_or_else(|error| panic!("SGLang client construction failed: {error:?}"));
+    exercise_provider(
+        &client,
+        Provider::Sglang,
+        DimensionMode::Native,
+        expected_dimensions,
+        image_data_url(),
+        false,
+    )
+    .await;
+    let video = required("SGLANG_VIDEO_SOURCE");
+    let options = EmbedOptions::default();
+    let mut fixed_space = None;
+    let video_only = client
+        .embed_fusion(&[ContentPart::VideoSource(video.clone())], &options)
+        .await
+        .unwrap_or_else(|error| panic!("SGLang video-only embedding failed: {error:?}"));
+    validate_response(
+        &video_only,
+        Provider::Sglang,
+        DimensionMode::Native,
+        1,
+        expected_dimensions,
+        &mut fixed_space,
+    );
+    let mixed = client
+        .embed_fusion(
+            &[
+                ContentPart::ImageDataUrl(image_data_url()),
+                ContentPart::VideoSource(video),
+                ContentPart::Text("SGLang E2E caption".into()),
+            ],
+            &options,
+        )
+        .await
+        .unwrap_or_else(|error| panic!("SGLang text-image-video embedding failed: {error:?}"));
+    validate_response(
+        &mixed,
+        Provider::Sglang,
+        DimensionMode::Native,
+        1,
+        expected_dimensions,
+        &mut fixed_space,
+    );
 }
 
 #[cfg(feature = "dashscope")]

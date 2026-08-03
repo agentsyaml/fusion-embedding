@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
-description = "Native vLLM, llama.cpp, and DashScope clients for fusion embeddings"
+description = "Native vLLM, llama.cpp, DashScope, and SGLang clients for fusion embeddings"
 documentation = "https://docs.rs/fusion-embedding"
 repository = "https://github.com/agentsyaml/fusion-embedding"
 readme = "README.md"
@@ -15,6 +15,7 @@ default = ["vllm", "llama-cpp", "dashscope"]
 vllm = ["dep:secrecy"]
 llama-cpp = []
 dashscope = ["dep:secrecy"]
+sglang = ["dep:secrecy"]
 
 [dependencies]
 base64 = "0.22"

@@ -2,7 +2,7 @@
 
 [简体中文](README.zh-CN.md)
 
-`fusion-embedding` is a small Rust client for Qwen3-VL embedding deployments with fixed wire profiles for vLLM, llama.cpp, and DashScope. A `Client` is constructed with one backend, endpoint, deployment identity, and expected vector dimension.
+`fusion-embedding` is a small Rust client for Qwen3-VL embedding deployments with fixed wire profiles for vLLM, llama.cpp, DashScope, and SGLang. A `Client` is constructed with one backend, endpoint, deployment identity, and expected vector dimension.
 
 ## Backends and features
 
@@ -11,19 +11,22 @@
 | `vllm` | vLLM OpenAI-compatible embeddings | `Client::vllm(VllmConfig)` |
 | `llama-cpp` | llama.cpp embeddings | `Client::llama_cpp(LlamaCppConfig)` |
 | `dashscope` | DashScope native multimodal embeddings | `Client::dashscope(DashScopeConfig)` |
+| `sglang` | SGLang v0.5.11+ standard embeddings | `Client::sglang(SglangConfig)` |
 
-All features are enabled by default. Disable defaults when only one backend is needed:
+vLLM, llama.cpp, and DashScope are enabled by default; SGLang is opt-in. Select only the backend you need:
 
 ```toml
 [dependencies]
-fusion-embedding = { version = "0.1", default-features = false, features = ["vllm"] }
+fusion-embedding = { version = "0.1", default-features = false, features = ["sglang"] }
 ```
 
 ## Scope and limits
 
-The public API provides `embed_texts` for a non-empty batch of text and `embed_fusion` for ordered `ContentPart::{Text, ImageDataUrl}` input. It accepts **only canonical PNG or JPEG base64 data URLs** for images. The library does not perform file I/O: read and encode any image in your application before calling it. Remote media URLs, local file paths, video, and other media types are not accepted.
+The public API provides `embed_texts` for a non-empty batch and `embed_fusion` for `ContentPart::{Text, ImageDataUrl, VideoSource}`. Images are **only canonical PNG or JPEG base64 data URLs**. The library does not perform file I/O. `VideoSource` is SGLang-only and is passed as a server-accessible URL/path or bare base64; data-video URLs are not promised.
 
-vLLM and llama.cpp fusion requests require exactly one image. DashScope accepts up to five images (including text-only content) and one to twenty content items. A client fixes its model identity, pipeline ID, and expected dimensions; `EmbedOptions` can only override the per-call timeout.
+vLLM and llama.cpp fusion requests require exactly one image. DashScope accepts up to five images and one to twenty content items. SGLang's standard endpoint supports at most one image and one video per vector; its runtime may support more, but the public endpoint schema cannot represent multiple images or videos in one item. A client fixes its model identity, pipeline ID, and expected dimensions; `EmbedOptions` can only override the per-call timeout.
+
+SGLang fusion parts must be in canonical `image → video → text` order. Each kind is optional but may appear at most once; non-canonical or repeated parts are rejected.
 
 For Qwen text-only deployments, vLLM and llama.cpp apply a fixed Qwen instruction/chat profile to every `embed_texts` item before sending the batch. DashScope text requests remain native.
 
@@ -35,7 +38,7 @@ fusion-embedding = "0.1"
 url = "2"
 ```
 
-Add `secrecy = "0.10"` when constructing a vLLM client with an API key or any DashScope client.
+Add `secrecy = "0.10"` when constructing a vLLM or SGLang client with an API key, or any DashScope client.
 
 ## Minimal calls
 
@@ -90,6 +93,7 @@ The value passed to `ImageDataUrl` has the form `data:image/png;base64,<canonica
 | vLLM | `base_endpoint, model, pipeline_id, expected_dimensions` | Accepts `/` or `/v1/models`, then uses `/v1/embeddings` | Native dimensions by default; `.with_server_dimensions(...)` requests one. API key is optional via `.with_api_key(SecretString)`. |
 | llama.cpp | `endpoint, model_identity, pipeline_id, expected_dimensions, media_marker` | Accepts `/` or `/v1/models`, then uses `/v1/embeddings` | Native dimensions only. `model_identity` identifies the embedding space and is not sent to llama.cpp. |
 | DashScope | `full_native_post_url, model, pipeline_id, native_dimensions, api_key` | Requires the complete native POST URL | API key is required. `.with_server_dimensions(...)` accepts only 256, 512, 768, 1024, 1536, 2048, or 2560. |
+| SGLang | `endpoint, model, pipeline_id, native_dimensions` | Requires SGLang v0.5.11+; accepts `/` or `/v1/models`, then uses `/v1/embeddings` | Native dimensions only; API key is optional. Structured inputs are Jinja-templated by SGLang, so the client sends no manual Qwen text wrapper. |
 
 All configurations support `.with_timeouts(connect_timeout, request_timeout)`. Each also has `.allow_remote_http(true)`, which is only for an intentional non-loopback cleartext deployment.
 
@@ -111,13 +115,17 @@ The live tests are ignored and read **process environment variables only**; the 
 | llama.cpp | `E2E_IMAGE_PATH`, `LLAMA_CPP_MODELS_URL`, `LLAMA_CPP_CONFIGURED_MODEL`, `LLAMA_CPP_PIPELINE_ID`, `LLAMA_CPP_DIMENSIONS` | `LLAMA_CPP_MEDIA_MARKER`, `LLAMA_CPP_ALLOW_REMOTE_HTTP` |
 | DashScope official | `E2E_IMAGE_PATH`, `DASHSCOPE_API_KEY`, `DASHSCOPE_BASE_URL`, `DASHSCOPE_CONFIGURED_MODEL`, `DASHSCOPE_PIPELINE_ID`, `DASHSCOPE_NATIVE_DIMENSIONS` | `DASHSCOPE_DIMENSIONS` |
 | DashScope enterprise | `E2E_IMAGE_PATH`, `DASHSCOPE_EMBEDDING_API_KEY`, `DASHSCOPE_EMBEDDING_BASE_URL`, `DASHSCOPE_ENTERPRISE_CONFIGURED_MODEL`, `DASHSCOPE_ENTERPRISE_PIPELINE_ID`, `DASHSCOPE_ENTERPRISE_NATIVE_DIMENSIONS` | `DASHSCOPE_ENTERPRISE_DIMENSIONS`, `DASHSCOPE_ENTERPRISE_ALLOW_REMOTE_HTTP` |
+| SGLang | `E2E_IMAGE_PATH`, `SGLANG_MODELS_URL` (or `SGLANG_BASE_URL`), `SGLANG_MODEL`, `SGLANG_PIPELINE_ID`, `SGLANG_DIMENSIONS`, `SGLANG_VIDEO_SOURCE` | `SGLANG_API_KEY`, `SGLANG_ALLOW_REMOTE_HTTP` |
 
 If `LLAMA_CPP_MEDIA_MARKER` is absent, the E2E test probes the configured llama.cpp endpoint's `/props` route. Run one provider test, or all configured ignored tests:
 
 ```sh
 cargo test --test e2e vllm_e2e -- --ignored
+cargo test --no-default-features --features sglang --test e2e sglang_e2e -- --ignored
 cargo test --test e2e -- --ignored
 ```
+
+The SGLang client has local HTTP contract coverage only; no live SGLang E2E result has been recorded.
 
 ## Development and release checks
 

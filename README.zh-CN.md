@@ -2,7 +2,7 @@
 
 [English](README.md)
 
-`fusion-embedding` 是一个精简的 Rust 客户端，为 vLLM、llama.cpp 与 DashScope 的 Qwen3-VL embedding 部署提供固定的请求协议。一个 `Client` 在创建时绑定一个后端、端点、部署标识和预期向量维度。
+`fusion-embedding` 是一个精简的 Rust 客户端，为 vLLM、llama.cpp、DashScope 与 SGLang 的 Qwen3-VL embedding 部署提供固定的请求协议。一个 `Client` 在创建时绑定一个后端、端点、部署标识和预期向量维度。
 
 ## 后端与 feature
 
@@ -11,19 +11,22 @@
 | `vllm` | vLLM 的 OpenAI 兼容 embedding 接口 | `Client::vllm(VllmConfig)` |
 | `llama-cpp` | llama.cpp embedding 接口 | `Client::llama_cpp(LlamaCppConfig)` |
 | `dashscope` | DashScope 原生多模态 embedding 接口 | `Client::dashscope(DashScopeConfig)` |
+| `sglang` | SGLang v0.5.11+ 标准 embedding 接口 | `Client::sglang(SglangConfig)` |
 
-默认启用全部 feature。只使用一个后端时可关闭默认 feature：
+默认启用 vLLM、llama.cpp 与 DashScope；SGLang 需要显式启用。只选择 SGLang 时：
 
 ```toml
 [dependencies]
-fusion-embedding = { version = "0.1", default-features = false, features = ["vllm"] }
+fusion-embedding = { version = "0.1", default-features = false, features = ["sglang"] }
 ```
 
 ## 范围与限制
 
-公共 API 提供非空文本批量调用 `embed_texts`，以及接受有序 `ContentPart::{Text, ImageDataUrl}` 的 `embed_fusion`。图片**只能是规范的 PNG 或 JPEG base64 data URL**。库不做文件 I/O；应由应用程序先读取、编码图片再传入。远程媒体 URL、本地文件路径、视频及其他媒体类型都不被接受。
+公共 API 提供非空文本批量调用 `embed_texts`，以及接受 `ContentPart::{Text, ImageDataUrl, VideoSource}` 的 `embed_fusion`。图片**只能是规范的 PNG 或 JPEG base64 data URL**，库不做文件 I/O。`VideoSource` 仅供 SGLang 使用，原样传递服务端可访问 URL/path 或裸 base64；不承诺 data-video URL。
 
-vLLM 与 llama.cpp 的图文调用要求恰好一张图片。DashScope 最多支持五张图片（也允许仅含文本的内容），内容项为 1 到 20 个。客户端会固定模型标识、pipeline ID 与预期维度；`EmbedOptions` 仅能修改单次调用的超时。
+vLLM 与 llama.cpp 的图文调用要求恰好一张图片。DashScope 最多支持五张图片，内容项为 1 到 20 个。SGLang 标准端点每个向量最多一张图片和一个视频；runtime 可能支持更多，但公开 endpoint schema 无法表达同一 item 的多图或多视频。客户端会固定模型标识、pipeline ID 与预期维度；`EmbedOptions` 仅能修改单次调用的超时。
+
+SGLang fusion parts 必须采用 `image → video → text` 的 canonical 顺序。每类均可省略，但最多一个；非 canonical 或重复 part 会被拒绝。
 
 面向 Qwen 的纯文本部署时，vLLM 与 llama.cpp 会在发送批量 `embed_texts` 前为每项应用固定的 Qwen instruction/chat profile；DashScope 的文本请求保持原生格式。
 
@@ -90,6 +93,7 @@ let response = client
 | vLLM | `base_endpoint, model, pipeline_id, expected_dimensions` | 只接受 `/` 或 `/v1/models`，随后请求 `/v1/embeddings` | 默认服务端原生维度；`.with_server_dimensions(...)` 会请求指定维度。可用 `.with_api_key(SecretString)` 设置可选 API key。 |
 | llama.cpp | `endpoint, model_identity, pipeline_id, expected_dimensions, media_marker` | 只接受 `/` 或 `/v1/models`，随后请求 `/v1/embeddings` | 仅使用原生维度。`model_identity` 用于标识 embedding 空间，不会发送给 llama.cpp。 |
 | DashScope | `full_native_post_url, model, pipeline_id, native_dimensions, api_key` | 必须提供完整的原生 POST URL | API key 必填。`.with_server_dimensions(...)` 只接受 256、512、768、1024、1536、2048 或 2560。 |
+| SGLang | `endpoint, model, pipeline_id, native_dimensions` | 需要 SGLang v0.5.11+；接受 `/` 或 `/v1/models`，随后请求 `/v1/embeddings` | 仅原生维度；API key 可选。结构化输入由 SGLang Jinja 处理，客户端不手工包装 Qwen 文本。 |
 
 所有配置都支持 `.with_timeouts(connect_timeout, request_timeout)`。每种配置也都有 `.allow_remote_http(true)`，仅在明确需要连接非 loopback 的明文 HTTP 部署时使用。
 
@@ -111,13 +115,17 @@ let response = client
 | llama.cpp | `E2E_IMAGE_PATH`、`LLAMA_CPP_MODELS_URL`、`LLAMA_CPP_CONFIGURED_MODEL`、`LLAMA_CPP_PIPELINE_ID`、`LLAMA_CPP_DIMENSIONS` | `LLAMA_CPP_MEDIA_MARKER`、`LLAMA_CPP_ALLOW_REMOTE_HTTP` |
 | DashScope 官方端点 | `E2E_IMAGE_PATH`、`DASHSCOPE_API_KEY`、`DASHSCOPE_BASE_URL`、`DASHSCOPE_CONFIGURED_MODEL`、`DASHSCOPE_PIPELINE_ID`、`DASHSCOPE_NATIVE_DIMENSIONS` | `DASHSCOPE_DIMENSIONS` |
 | DashScope 企业端点 | `E2E_IMAGE_PATH`、`DASHSCOPE_EMBEDDING_API_KEY`、`DASHSCOPE_EMBEDDING_BASE_URL`、`DASHSCOPE_ENTERPRISE_CONFIGURED_MODEL`、`DASHSCOPE_ENTERPRISE_PIPELINE_ID`、`DASHSCOPE_ENTERPRISE_NATIVE_DIMENSIONS` | `DASHSCOPE_ENTERPRISE_DIMENSIONS`、`DASHSCOPE_ENTERPRISE_ALLOW_REMOTE_HTTP` |
+| SGLang | `E2E_IMAGE_PATH`、`SGLANG_MODELS_URL`（或 `SGLANG_BASE_URL`）、`SGLANG_MODEL`、`SGLANG_PIPELINE_ID`、`SGLANG_DIMENSIONS`、`SGLANG_VIDEO_SOURCE` | `SGLANG_API_KEY`、`SGLANG_ALLOW_REMOTE_HTTP` |
 
 未设置 `LLAMA_CPP_MEDIA_MARKER` 时，E2E 会探测所配置 llama.cpp 端点的 `/props` 路由。可运行单个 provider，或运行所有已配置的 ignored 测试：
 
 ```sh
 cargo test --test e2e vllm_e2e -- --ignored
+cargo test --no-default-features --features sglang --test e2e sglang_e2e -- --ignored
 cargo test --test e2e -- --ignored
 ```
+
+SGLang 目前只有本地 HTTP contract 测试，尚无真实 SGLang E2E 结果。
 
 ## 开发与发布前检查
 

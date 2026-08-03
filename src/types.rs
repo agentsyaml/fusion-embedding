@@ -11,6 +11,7 @@ pub struct EmbedOptions {
 pub enum ContentPart {
     Text(String),
     ImageDataUrl(String),
+    VideoSource(String),
 }
 
 impl fmt::Debug for ContentPart {
@@ -18,6 +19,7 @@ impl fmt::Debug for ContentPart {
         match self {
             Self::Text(_) => f.write_str("Text(<redacted>)"),
             Self::ImageDataUrl(_) => f.write_str("ImageDataUrl(<redacted>)"),
+            Self::VideoSource(_) => f.write_str("VideoSource(<redacted>)"),
         }
     }
 }
@@ -27,6 +29,7 @@ pub enum Provider {
     Vllm,
     LlamaCpp,
     DashScope,
+    Sglang,
 }
 
 #[derive(Clone, Copy, Debug, Eq, Hash, PartialEq)]

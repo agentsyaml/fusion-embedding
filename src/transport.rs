@@ -12,7 +12,12 @@ use crate::Error;
 const MAX_PROVIDER_MESSAGE_CHARS: usize = 1024;
 pub(crate) const MAX_DIAGNOSTIC_CHARS: usize = 256;
 
-#[cfg(any(feature = "vllm", feature = "llama-cpp", feature = "dashscope"))]
+#[cfg(any(
+    feature = "vllm",
+    feature = "llama-cpp",
+    feature = "dashscope",
+    feature = "sglang"
+))]
 pub(crate) fn validate_identifier(name: &str, value: &str, max_bytes: usize) -> Result<(), Error> {
     if value.trim().is_empty() {
         return Err(Error::Config {
@@ -32,7 +37,12 @@ pub(crate) fn validate_identifier(name: &str, value: &str, max_bytes: usize) -> 
     Ok(())
 }
 
-#[cfg(any(feature = "vllm", feature = "llama-cpp", feature = "dashscope"))]
+#[cfg(any(
+    feature = "vllm",
+    feature = "llama-cpp",
+    feature = "dashscope",
+    feature = "sglang"
+))]
 pub(crate) fn validate_transport(endpoint: &Url, allow_remote_http: bool) -> Result<(), Error> {
     match endpoint.scheme() {
         "https" => Ok(()),
@@ -46,7 +56,12 @@ pub(crate) fn validate_transport(endpoint: &Url, allow_remote_http: bool) -> Res
     }
 }
 
-#[cfg(any(feature = "vllm", feature = "llama-cpp", feature = "dashscope"))]
+#[cfg(any(
+    feature = "vllm",
+    feature = "llama-cpp",
+    feature = "dashscope",
+    feature = "sglang"
+))]
 fn endpoint_is_loopback(endpoint: &Url) -> bool {
     match endpoint.host() {
         Some(Host::Ipv4(ip)) => IpAddr::V4(ip).is_loopback(),
@@ -56,7 +71,12 @@ fn endpoint_is_loopback(endpoint: &Url) -> bool {
     }
 }
 
-#[cfg(any(feature = "vllm", feature = "llama-cpp", feature = "dashscope"))]
+#[cfg(any(
+    feature = "vllm",
+    feature = "llama-cpp",
+    feature = "dashscope",
+    feature = "sglang"
+))]
 #[derive(Deserialize)]
 struct WireErrorEnvelope {
     #[serde(default)]
@@ -69,7 +89,12 @@ struct WireErrorEnvelope {
     request_id: Option<String>,
 }
 
-#[cfg(any(feature = "vllm", feature = "llama-cpp", feature = "dashscope"))]
+#[cfg(any(
+    feature = "vllm",
+    feature = "llama-cpp",
+    feature = "dashscope",
+    feature = "sglang"
+))]
 #[derive(Deserialize)]
 struct WireError {
     #[serde(default)]
@@ -82,7 +107,12 @@ struct WireError {
     request_id: Option<String>,
 }
 
-#[cfg(any(feature = "vllm", feature = "llama-cpp", feature = "dashscope"))]
+#[cfg(any(
+    feature = "vllm",
+    feature = "llama-cpp",
+    feature = "dashscope",
+    feature = "sglang"
+))]
 #[derive(Deserialize)]
 #[serde(untagged)]
 enum WireErrorCode {
@@ -91,7 +121,12 @@ enum WireErrorCode {
     Unsigned(u64),
 }
 
-#[cfg(any(feature = "vllm", feature = "llama-cpp", feature = "dashscope"))]
+#[cfg(any(
+    feature = "vllm",
+    feature = "llama-cpp",
+    feature = "dashscope",
+    feature = "sglang"
+))]
 impl WireErrorCode {
     fn as_string(&self) -> String {
         match self {
@@ -102,7 +137,12 @@ impl WireErrorCode {
     }
 }
 
-#[cfg(any(feature = "vllm", feature = "llama-cpp", feature = "dashscope"))]
+#[cfg(any(
+    feature = "vllm",
+    feature = "llama-cpp",
+    feature = "dashscope",
+    feature = "sglang"
+))]
 pub(crate) async fn read_limited(
     response: &mut reqwest::Response,
     limit: usize,
@@ -129,7 +169,12 @@ pub(crate) async fn read_limited(
     Ok((body, false))
 }
 
-#[cfg(any(feature = "vllm", feature = "llama-cpp", feature = "dashscope"))]
+#[cfg(any(
+    feature = "vllm",
+    feature = "llama-cpp",
+    feature = "dashscope",
+    feature = "sglang"
+))]
 pub(crate) fn api_error(
     status: StatusCode,
     body: &[u8],
@@ -177,7 +222,12 @@ pub(crate) fn api_error(
     }
 }
 
-#[cfg(any(feature = "vllm", feature = "llama-cpp", feature = "dashscope"))]
+#[cfg(any(
+    feature = "vllm",
+    feature = "llama-cpp",
+    feature = "dashscope",
+    feature = "sglang"
+))]
 fn error_code(envelope: &WireErrorEnvelope) -> Option<String> {
     let value = if let Some(code) = envelope
         .error
@@ -197,7 +247,12 @@ fn error_code(envelope: &WireErrorEnvelope) -> Option<String> {
     sanitize_metadata(&value, 128)
 }
 
-#[cfg(any(feature = "vllm", feature = "llama-cpp", feature = "dashscope"))]
+#[cfg(any(
+    feature = "vllm",
+    feature = "llama-cpp",
+    feature = "dashscope",
+    feature = "sglang"
+))]
 fn sanitize_provider_message(value: &str) -> Option<String> {
     let lower = value.to_ascii_lowercase();
     if lower.contains("data:image/") || lower.contains("<html") || lower.contains("<!doctype") {
@@ -206,7 +261,12 @@ fn sanitize_provider_message(value: &str) -> Option<String> {
     sanitize_metadata(value, MAX_PROVIDER_MESSAGE_CHARS)
 }
 
-#[cfg(any(feature = "vllm", feature = "llama-cpp", feature = "dashscope"))]
+#[cfg(any(
+    feature = "vllm",
+    feature = "llama-cpp",
+    feature = "dashscope",
+    feature = "sglang"
+))]
 pub(crate) fn sanitize_metadata(value: &str, max_chars: usize) -> Option<String> {
     let mut output = String::new();
     for character in value.chars().filter(|character| !character.is_control()) {
@@ -219,7 +279,12 @@ pub(crate) fn sanitize_metadata(value: &str, max_chars: usize) -> Option<String>
     (!output.is_empty()).then_some(output)
 }
 
-#[cfg(any(feature = "vllm", feature = "llama-cpp", feature = "dashscope"))]
+#[cfg(any(
+    feature = "vllm",
+    feature = "llama-cpp",
+    feature = "dashscope",
+    feature = "sglang"
+))]
 pub(crate) fn parse_retry_after(value: &str) -> Option<Duration> {
     if let Ok(seconds) = value.trim().parse::<u64>() {
         return Some(Duration::from_secs(seconds));

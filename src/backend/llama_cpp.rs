@@ -158,6 +158,11 @@ pub(crate) fn build_llama_fusion_request<'a>(
                 image_base64 = Some(validate_data_url(url)?);
                 atoms.push(media_marker);
             }
+            ContentPart::VideoSource(_) => {
+                return Err(Error::InvalidInput {
+                    message: "llama.cpp does not support VideoSource".into(),
+                });
+            }
         }
     }
     if image_count != 1 {

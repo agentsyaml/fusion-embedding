@@ -13,14 +13,24 @@ pub(crate) struct IndexedEmbedding {
     pub(crate) embedding: Vec<f32>,
 }
 
-#[cfg(any(feature = "vllm", feature = "llama-cpp", feature = "dashscope"))]
+#[cfg(any(
+    feature = "vllm",
+    feature = "llama-cpp",
+    feature = "dashscope",
+    feature = "sglang"
+))]
 #[derive(Clone, Copy)]
 enum ImageKind {
     Png,
     Jpeg,
 }
 
-#[cfg(any(feature = "vllm", feature = "llama-cpp", feature = "dashscope"))]
+#[cfg(any(
+    feature = "vllm",
+    feature = "llama-cpp",
+    feature = "dashscope",
+    feature = "sglang"
+))]
 pub(crate) fn validate_data_url(url: &str) -> Result<&str, Error> {
     let (kind, encoded) = if let Some(encoded) = url.strip_prefix("data:image/png;base64,") {
         (ImageKind::Png, encoded)
@@ -73,7 +83,12 @@ pub(crate) fn validate_data_url(url: &str) -> Result<&str, Error> {
     Ok(encoded)
 }
 
-#[cfg(any(feature = "vllm", feature = "llama-cpp", feature = "dashscope"))]
+#[cfg(any(
+    feature = "vllm",
+    feature = "llama-cpp",
+    feature = "dashscope",
+    feature = "sglang"
+))]
 fn valid_base64_alphabet(value: &[u8]) -> bool {
     let padding = value.iter().rev().take_while(|&&byte| byte == b'=').count();
     padding <= 2
@@ -85,7 +100,12 @@ fn valid_base64_alphabet(value: &[u8]) -> bool {
             .all(|&byte| byte == b'=')
 }
 
-#[cfg(any(feature = "vllm", feature = "llama-cpp", feature = "dashscope"))]
+#[cfg(any(
+    feature = "vllm",
+    feature = "llama-cpp",
+    feature = "dashscope",
+    feature = "sglang"
+))]
 fn png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     // Header-only preflight: require the complete IHDR chunk, but leave CRC and
     // full image decoding to the provider.
@@ -102,7 +122,12 @@ fn png_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     ))
 }
 
-#[cfg(any(feature = "vllm", feature = "llama-cpp", feature = "dashscope"))]
+#[cfg(any(
+    feature = "vllm",
+    feature = "llama-cpp",
+    feature = "dashscope",
+    feature = "sglang"
+))]
 fn jpeg_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     if bytes.len() < 4 || bytes[..3] != [0xff, 0xd8, 0xff] {
         return None;
@@ -160,7 +185,12 @@ fn jpeg_dimensions(bytes: &[u8]) -> Option<(u32, u32)> {
     None
 }
 
-#[cfg(any(feature = "vllm", feature = "llama-cpp", feature = "dashscope"))]
+#[cfg(any(
+    feature = "vllm",
+    feature = "llama-cpp",
+    feature = "dashscope",
+    feature = "sglang"
+))]
 pub(crate) fn validate_embeddings(
     data: Vec<IndexedEmbedding>,
     expected_count: usize,
@@ -209,7 +239,12 @@ pub(crate) fn validate_embeddings(
         .collect()
 }
 
-#[cfg(any(feature = "vllm", feature = "llama-cpp", feature = "dashscope"))]
+#[cfg(any(
+    feature = "vllm",
+    feature = "llama-cpp",
+    feature = "dashscope",
+    feature = "sglang"
+))]
 pub(crate) fn normalize_vector(vector: Vec<f32>) -> Result<Vec<f32>, Error> {
     if vector.iter().any(|value| !value.is_finite()) {
         return Err(Error::InvalidResponse {
