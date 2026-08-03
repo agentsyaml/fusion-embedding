@@ -129,6 +129,8 @@ SGLang 目前只有本地 HTTP contract 测试，尚无真实 SGLang E2E 结果�
 
 ## 开发与发布前检查
 
+CI 会在推送到 `main` 和 pull request 时运行这些检查。后续发布应先 bump 并合并 `Cargo.toml` version，再推送匹配的 `vX.Y.Z` tag。crates.io Trusted Publisher 必须配置 owner `agentsyaml`、repo `fusion-embedding`、workflow `release.yml` 与 environment `release`。`0.1.0` 已手工发布，请勿为它创建 release tag。
+
 ```sh
 cargo fmt --check
 cargo test

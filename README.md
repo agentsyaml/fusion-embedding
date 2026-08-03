@@ -129,6 +129,8 @@ The SGLang client has local HTTP contract coverage only; no live SGLang E2E resu
 
 ## Development and release checks
 
+CI runs these checks on pushes to `main` and pull requests. For a later release, bump and merge the `Cargo.toml` version first, then push the matching `vX.Y.Z` tag. Configure crates.io Trusted Publishing for owner `agentsyaml`, repository `fusion-embedding`, workflow `release.yml`, and environment `release`. Version `0.1.0` was published manually; do not create a release tag for it.
+
 ```sh
 cargo fmt --check
 cargo test
