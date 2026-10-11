@@ -11,7 +11,7 @@ use super::{
 };
 use crate::transport::validate_identifier;
 use crate::validation::validate_data_url;
-use crate::{Error, MultimodalPart};
+use crate::{Error, MultimodalPart, Provider};
 
 pub(crate) const PROFILE_REVISION: &str = "qwen3-vl-embedding-llama-cpp-v2";
 const EMBEDDINGS_PATH: &str = "/v1/embeddings";
@@ -20,7 +20,7 @@ const SYSTEM_PROMPT: &str = "Represent the user's input.";
 
 /// llama.cpp client configuration with a caller-pinned media marker.
 ///
-/// The endpoint must have path `/` or exactly `/v1/models`; both forms are
+/// The endpoint must have path `/`, `/v1/models`, or `/v1/embeddings`; these forms are
 /// normalized to the same origin's `/v1/embeddings`. `configured_model` is an
 /// embedding-space identity label and is never sent to llama.cpp.
 #[cfg(feature = "llama-cpp")]
@@ -158,9 +158,16 @@ pub(crate) fn build_llama_fusion_request<'a>(
                 image_base64.push(validate_data_url(url)?);
                 atoms.push(media_marker);
             }
-            MultimodalPart::VideoSource(_) => {
-                return Err(Error::InvalidInput {
-                    message: "llama.cpp does not support VideoSource".into(),
+            MultimodalPart::ImageUrl(_) => {
+                return Err(Error::Unsupported {
+                    provider: Provider::LlamaCpp,
+                    feature: "remote image URLs",
+                });
+            }
+            MultimodalPart::VideoSource(_) | MultimodalPart::VideoUrl(_) => {
+                return Err(Error::Unsupported {
+                    provider: Provider::LlamaCpp,
+                    feature: "video inputs",
                 });
             }
         }
@@ -202,9 +209,9 @@ pub(crate) fn normalize_llama_endpoint(mut endpoint: Url) -> Result<Url, Error> 
             message: "endpoint must be an absolute URL without userinfo, query, or fragment".into(),
         });
     }
-    if !matches!(endpoint.path(), "/" | "/v1/models") {
+    if !matches!(endpoint.path(), "/" | "/v1/models" | EMBEDDINGS_PATH) {
         return Err(Error::Config {
-            message: "llama.cpp endpoint path must be / or /v1/models".into(),
+            message: "llama.cpp endpoint path must be /, /v1/models, or /v1/embeddings".into(),
         });
     }
     endpoint.set_path(EMBEDDINGS_PATH);
@@ -381,8 +388,12 @@ mod tests {
         );
     }
     #[test]
-    fn llama_endpoint_normalizes_root_and_models_only() {
-        for url in ["http://localhost:8080/", "http://localhost:8080/v1/models"] {
+    fn llama_endpoint_normalizes_supported_paths() {
+        for url in [
+            "http://localhost:8080/",
+            "http://localhost:8080/v1/models",
+            "http://localhost:8080/v1/embeddings",
+        ] {
             let config = LlamaCppConfig::new(
                 Url::parse(url).unwrap(),
                 "identity-only-model",
@@ -396,7 +407,6 @@ mod tests {
         }
         for url in [
             "http://localhost:8080/v1/models/",
-            "http://localhost:8080/v1/embeddings",
             "http://localhost:8080/props",
         ] {
             assert!(

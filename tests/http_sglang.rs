@@ -30,6 +30,18 @@ fn client(endpoint: Url, api_key: bool) -> Client {
     Client::new(config).unwrap()
 }
 
+#[test]
+fn embeddings_endpoint_path_is_accepted() {
+    let config = SglangConfig::new(
+        Url::parse("http://localhost:8080/v1/embeddings").unwrap(),
+        "sglang-model",
+        "sglang-pipeline",
+        NonZeroUsize::new(2).unwrap(),
+    )
+    .unwrap();
+    assert!(Client::new(config).is_ok());
+}
+
 fn png_data_url() -> String {
     use base64::{Engine as _, engine::general_purpose::STANDARD};
     let mut bytes = vec![137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13];
@@ -84,6 +96,18 @@ async fn image_video_and_combined_inputs_match_schema() {
             json!({"image": png_data_url().split_once(',').unwrap().1}),
         ),
         (
+            vec![MultimodalPart::ImageUrl(
+                Url::parse("https://media.example/image").unwrap(),
+            )],
+            json!({"image":"https://media.example/image"}),
+        ),
+        (
+            vec![MultimodalPart::VideoUrl(
+                Url::parse("https://media.example/video").unwrap(),
+            )],
+            json!({"video":"https://media.example/video"}),
+        ),
+        (
             vec![MultimodalPart::VideoSource(
                 "https://media.example/video.mp4".into(),
             )],
@@ -133,6 +157,23 @@ async fn noncanonical_and_duplicate_fusion_parts_are_rejected() {
             feature: "multiple images in one embedding input",
         }
     ));
+    let mixed_duplicate = client(Url::parse("http://127.0.0.1:9/").unwrap(), false)
+        .embed_multimodal_with_options(
+            &[
+                MultimodalPart::ImageUrl(Url::parse("https://media.example/image").unwrap()),
+                MultimodalPart::ImageDataUrl(png_data_url()),
+            ],
+            EmbedOptions::default(),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        mixed_duplicate,
+        Error::Unsupported {
+            provider: Provider::Sglang,
+            ..
+        }
+    ));
     for parts in [
         vec![
             MultimodalPart::VideoSource("one".into()),
@@ -142,6 +183,10 @@ async fn noncanonical_and_duplicate_fusion_parts_are_rejected() {
         vec![
             MultimodalPart::Text("caption".into()),
             MultimodalPart::ImageDataUrl(png_data_url()),
+        ],
+        vec![
+            MultimodalPart::Text("caption".into()),
+            MultimodalPart::VideoUrl(Url::parse("https://media.example/video").unwrap()),
         ],
         vec![
             MultimodalPart::VideoSource("video".into()),

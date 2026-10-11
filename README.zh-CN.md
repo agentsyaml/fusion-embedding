@@ -24,18 +24,18 @@ fusion-embedding = { version = "0.1", default-features = false, features = ["sgl
 
 ## 范围与限制
 
-`embed_texts(&[S])` 返回 `BatchEmbeddingResponse`；`embed_multimodal(&[MultimodalPart])` 将全部 part 融合为一个 `EmbeddingResponse`。part 支持 `Text`、`ImageDataUrl`、`VideoSource` 及小写便捷构造。
+`embed_texts(&[S])` 返回 `BatchEmbeddingResponse`；`embed_multimodal(&[MultimodalPart])` 将全部 part 融合为一个 `EmbeddingResponse`。part 包括 `Text`、`ImageDataUrl`、`ImageUrl(Url)`、`VideoUrl(Url)` 和旧版 `VideoSource`，并提供 `image_url(Url)`、`video_url(Url)` 等小写构造方法。`ImageDataUrl` 仅接受严格校验的 PNG/JPEG data URL；此限制不适用于远程图片 URL。
 
 | 后端 | 单个多模态向量图片数 | 限制 |
 | --- | --- | --- |
-| vLLM | 一张或多张，保序 | 部署须配置足够的 multimodal image limit，实际模型须支持多图。 |
-| llama.cpp | 一张或多张，保序 | 模型和 mmproj 须支持多图。 |
-| DashScope | 最多 5 张 | 1–20 个 part。 |
-| SGLang standard endpoint | 最多 1 张 | 不支持同一 item 多图；最多一个视频；顺序 `image → video → text`。 |
+| vLLM | 一张或多张，保序 | 支持 HTTP(S) 图片 URL；部署须配置足够的 multimodal image limit，实际模型须支持多图。 |
+| llama.cpp | 一张或多张，保序 | 不支持远程图片 URL；模型和 mmproj 须支持多图。 |
+| DashScope | 最多 10 张 | 1–20 个 part；支持一个视频及图片/视频/文本融合。远程图片用 `ImageUrl`，视频用 `VideoUrl`。 |
+| SGLang standard endpoint | 最多一张图片和一个视频 | 支持 HTTP(S) 图片 URL；同一 item 不支持多图；顺序为 `image → video → text`。`VideoSource` 为旧版透传。 |
 
 需要按次传递 `EmbedOptions` 时，使用按值的 `embed_texts_with_options` 或 `embed_multimodal_with_options`。
 
-SGLang fusion parts 必须采用 `image → video → text` 的 canonical 顺序。每类均可省略，但最多一个；非 canonical 或重复 part 会被拒绝。
+SGLang fusion parts 必须采用 `image → video → text` 的 canonical 顺序。图片、视频、文本均可省略但最多各一个；非 canonical 或重复 part 会被拒绝。`VideoSource` 保留为 SGLang 旧版透传输入；DashScope 视频使用 `VideoUrl`。
 
 面向 Qwen 的纯文本部署时，vLLM 与 llama.cpp 会在发送批量 `embed_texts` 前为每项应用固定的 Qwen instruction/chat profile；DashScope 的文本请求保持原生格式。
 
@@ -74,15 +74,16 @@ println!("{}", response.embeddings()[0].len());
 # }
 ```
 
-图文融合时，在库外构造 data URL，并按需要保留内容顺序：
+图文融合时可直接传入远程 URL（SDK 不会下载图片）：
 
 ```rust,no_run
 # use fusion_embedding::{Client, MultimodalPart};
-# async fn example(client: Client, image_data_url: String) -> Result<(), fusion_embedding::Error> {
+# use url::Url;
+# async fn example(client: Client) -> Result<(), Box<dyn std::error::Error>> {
 let response = client
     .embed_multimodal(
         &[
-            MultimodalPart::image_data_url(image_data_url),
+            MultimodalPart::image_url(Url::parse("https://example.com/image.jpg")?),
             MultimodalPart::text("一个红色方块"),
         ],
     )
@@ -92,16 +93,18 @@ let response = client
 # }
 ```
 
-传给 `ImageDataUrl` 的值形如 `data:image/png;base64,<规范-base64>` 或 `data:image/jpeg;base64,<规范-base64>`。请使用应用程序选择的 base64 编码器处理图片字节；不要传入路径或 URL。
+`ImageDataUrl` 只接受 `data:image/png;base64,<规范-base64>` 或 `data:image/jpeg;base64,<规范-base64>`，并严格校验媒体类型和 base64。远程图片请改用 `ImageUrl(Url)` / `image_url(Url)`。DashScope 视频使用 `VideoUrl(Url)` / `video_url(Url)`，例如 `MultimodalPart::video_url(Url::parse("https://example.com/clip.mp4")?)`；`VideoSource` 是 SGLang 旧版透传，不是 DashScope 视频接口。
 
 ## 三种后端的配置差异
 
 | 后端 | `new` 参数 | 端点行为 | 维度与鉴权 |
 | --- | --- | --- | --- |
-| vLLM | `base_endpoint, model, pipeline_id, expected_dimensions` | 只接受 `/` 或 `/v1/models`，随后请求 `/v1/embeddings` | 默认服务端原生维度；`.with_server_dimensions(...)` 会请求指定维度。可用 `.with_api_key(SecretString)` 设置可选 API key。 |
-| llama.cpp | `endpoint, model_identity, pipeline_id, expected_dimensions, media_marker` | 只接受 `/` 或 `/v1/models`，随后请求 `/v1/embeddings` | 仅使用原生维度。`model_identity` 用于标识 embedding 空间，不会发送给 llama.cpp。 |
+| vLLM | `base_endpoint, model, pipeline_id, expected_dimensions` | 接受 `/`、`/v1/models` 或 `/v1/embeddings`，请求 `/v1/embeddings` | 默认服务端原生维度；`.with_server_dimensions(...)` 会请求指定维度，实际能力取决于部署和模型。可用 `.with_api_key(SecretString)` 设置可选 API key。 |
+| llama.cpp | `endpoint, model_identity, pipeline_id, expected_dimensions, media_marker` | 接受 `/`、`/v1/models` 或 `/v1/embeddings`，请求 `/v1/embeddings` | 仅使用原生维度。`model_identity` 用于标识 embedding 空间，不会发送给 llama.cpp。 |
 | DashScope | `full_native_post_url, model, pipeline_id, native_dimensions, api_key` | 必须提供完整的原生 POST URL | API key 必填。`.with_server_dimensions(...)` 只接受 256、512、768、1024、1536、2048 或 2560。 |
-| SGLang | `endpoint, model, pipeline_id, native_dimensions` | 需要 SGLang v0.5.11+；接受 `/` 或 `/v1/models`，随后请求 `/v1/embeddings` | 仅原生维度；API key 可选。结构化输入由 SGLang Jinja 处理，客户端不手工包装 Qwen 文本。 |
+| SGLang | `endpoint, model, pipeline_id, native_dimensions` | 需要 SGLang v0.5.11+；接受 `/`、`/v1/models` 或 `/v1/embeddings`，请求 `/v1/embeddings` | 仅原生维度；API key 可选。结构化输入由 SGLang Jinja 处理，客户端不手工包装 Qwen 文本。 |
+
+以上端点路径不接受任意 proxy 前缀。DashScope 仍要求完整的原生 URL。
 
 所有配置都支持 `.with_timeouts(connect_timeout, request_timeout)`。每种配置也都有 `.allow_remote_http(true)`，仅在明确需要连接非 loopback 的明文 HTTP 部署时使用。
 
@@ -109,9 +112,9 @@ let response = client
 
 `BatchEmbeddingResponse` 提供 `embeddings()`/`into_embeddings()`；`EmbeddingResponse` 提供 `embedding()`/`into_embedding()`；两者均提供 `space()`、`usage()` 与 `diagnostics()` 元数据。
 
-`Error` 区分配置或输入错误、传输失败、provider API 错误、无效响应与维度不匹配。成功响应会验证索引完整且不重复、维度符合预期、向量有限且非零，随后由库进行 L2 归一化。
+`Error` 区分配置或输入错误、传输失败、provider API 错误、无效响应与维度不匹配。成功响应会验证索引完整且不重复、维度符合预期、向量有限且非零，随后由库在本地进行 L2 归一化。vLLM 请求不再发送已移除的 `normalize` 参数；请求维度能力仍由部署和模型决定。
 
-默认接受 HTTPS。明文 HTTP 仅对 loopback 端点默认允许；远程端点必须显式调用 `.allow_remote_http(true)`。客户端不跟随重定向。相关 `Debug` 输出会隐藏 API key 和内容。
+默认接受 HTTPS。明文 HTTP 仅对 loopback 端点默认允许；远程端点必须显式调用 `.allow_remote_http(true)`。远程媒体 URL 只做语法校验，SDK 不会获取媒体；HTTP(S) URL 可包含签名 query，但禁止 userinfo 和 fragment。负责获取媒体的服务端必须限制出站访问及重定向。SDK 端点请求禁用重定向，并不能保护服务端的媒体获取。相关 `Debug` 输出会隐藏 API key 和内容。
 
 ## E2E 测试
 

@@ -1,5 +1,7 @@
 use std::{fmt, num::NonZeroUsize, time::Duration};
 
+use url::Url;
+
 /// Per-call options. No request can override model, profile, or dimensions.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct EmbedOptions {
@@ -11,7 +13,9 @@ pub struct EmbedOptions {
 pub enum MultimodalPart {
     Text(String),
     ImageDataUrl(String),
+    ImageUrl(Url),
     VideoSource(String),
+    VideoUrl(Url),
 }
 
 impl MultimodalPart {
@@ -23,8 +27,16 @@ impl MultimodalPart {
         Self::ImageDataUrl(value.into())
     }
 
+    pub fn image_url(url: Url) -> Self {
+        Self::ImageUrl(url)
+    }
+
     pub fn video_source(value: impl Into<String>) -> Self {
         Self::VideoSource(value.into())
+    }
+
+    pub fn video_url(url: Url) -> Self {
+        Self::VideoUrl(url)
     }
 }
 
@@ -33,7 +45,30 @@ impl fmt::Debug for MultimodalPart {
         match self {
             Self::Text(_) => f.write_str("Text(<redacted>)"),
             Self::ImageDataUrl(_) => f.write_str("ImageDataUrl(<redacted>)"),
+            Self::ImageUrl(_) => f.write_str("ImageUrl(<redacted>)"),
             Self::VideoSource(_) => f.write_str("VideoSource(<redacted>)"),
+            Self::VideoUrl(_) => f.write_str("VideoUrl(<redacted>)"),
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MultimodalPart;
+    use url::Url;
+
+    #[test]
+    fn url_parts_redact_full_urls() {
+        let secret = "signature=private-value";
+        for part in [
+            MultimodalPart::image_url(
+                Url::parse(&format!("https://example.com/image?{secret}")).unwrap(),
+            ),
+            MultimodalPart::video_url(
+                Url::parse(&format!("https://example.com/video?{secret}")).unwrap(),
+            ),
+        ] {
+            assert!(!format!("{part:?}").contains(secret));
         }
     }
 }

@@ -368,7 +368,6 @@ impl Client {
                     model: &self.space.configured_model,
                     input: &input,
                     encoding_format: EncodingFormat::Float,
-                    normalize: true,
                     dimensions: requested_dimensions.map(NonZeroUsize::get),
                 };
                 self.execute(&payload, texts.len(), &options, ResponseKind::Oai)

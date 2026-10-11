@@ -24,18 +24,18 @@ fusion-embedding = { version = "0.1", default-features = false, features = ["sgl
 
 ## Scope and limits
 
-`embed_texts(&[S])` returns `BatchEmbeddingResponse`; `embed_multimodal(&[MultimodalPart])` fuses all parts into one `EmbeddingResponse`. Parts are `Text`, `ImageDataUrl`, or `VideoSource`, with lowercase constructors. Images are canonical PNG or JPEG base64 data URLs.
+`embed_texts(&[S])` returns `BatchEmbeddingResponse`; `embed_multimodal(&[MultimodalPart])` fuses all parts into one `EmbeddingResponse`. Parts include `Text`, `ImageDataUrl`, `ImageUrl(Url)`, `VideoUrl(Url)`, and the legacy `VideoSource`, with lowercase constructors such as `image_url(Url)` and `video_url(Url)`. `ImageDataUrl` accepts only validated PNG/JPEG data URLs; that restriction does not apply to remote image URLs.
 
 | Backend | Images per multimodal vector | Limits |
 | --- | --- | --- |
-| vLLM | One or more, in order | Configure a sufficient multimodal image limit; the model must support multiple images. |
-| llama.cpp | One or more, in order | Model and mmproj must support multiple images. |
-| DashScope | Up to 5 | 1–20 parts. |
-| SGLang standard endpoint | At most 1 | No multiple images in one item; at most one video; `image → video → text` order. |
+| vLLM | One or more, in order | Supports HTTP(S) image URLs; configure a sufficient multimodal image limit and ensure the model supports multiple images. |
+| llama.cpp | One or more, in order | Does not support remote image URLs; model and mmproj must support multiple images. |
+| DashScope | Up to 10 | 1–20 parts; supports one video and image/video/text fusion. Use `ImageUrl` for remote images and `VideoUrl` for video. |
+| SGLang standard endpoint | At most 1 image and 1 video | Supports HTTP(S) image URLs; no multiple images in one item; order is `image → video → text`. `VideoSource` is legacy pass-through. |
 
 Use `embed_texts_with_options` or `embed_multimodal_with_options` to pass `EmbedOptions` by value.
 
-SGLang fusion parts must be in canonical `image → video → text` order. Each kind is optional but may appear at most once; non-canonical or repeated parts are rejected.
+SGLang fusion parts must be in canonical `image → video → text` order. Image, video, and text are each optional but may appear at most once; non-canonical or repeated parts are rejected. `VideoSource` is retained for SGLang's legacy pass-through input; DashScope video is supplied as `VideoUrl`.
 
 For Qwen text-only deployments, vLLM and llama.cpp apply a fixed Qwen instruction/chat profile to every `embed_texts` item before sending the batch. DashScope text requests remain native.
 
@@ -74,15 +74,16 @@ println!("{}", response.embeddings()[0].len());
 # }
 ```
 
-For image-text fusion, create the data URL outside the library and preserve the desired part order:
+For image-text fusion, pass a remote URL directly (the SDK does not download the image):
 
 ```rust,no_run
 # use fusion_embedding::{Client, MultimodalPart};
-# async fn example(client: Client, image_data_url: String) -> Result<(), fusion_embedding::Error> {
+# use url::Url;
+# async fn example(client: Client) -> Result<(), Box<dyn std::error::Error>> {
 let response = client
     .embed_multimodal(
         &[
-            MultimodalPart::image_data_url(image_data_url),
+            MultimodalPart::image_url(Url::parse("https://example.com/image.jpg")?),
             MultimodalPart::text("a red square"),
         ],
     )
@@ -92,16 +93,18 @@ let response = client
 # }
 ```
 
-The value passed to `ImageDataUrl` has the form `data:image/png;base64,<canonical-base64>` or `data:image/jpeg;base64,<canonical-base64>`. Encode image bytes with your chosen base64 encoder; do not pass a path or URL.
+`ImageDataUrl` requires `data:image/png;base64,<canonical-base64>` or `data:image/jpeg;base64,<canonical-base64>` and validates the media type and base64 strictly. For remote images, use `ImageUrl(Url)` / `image_url(Url)` instead. DashScope video uses `VideoUrl(Url)` / `video_url(Url)`, for example `MultimodalPart::video_url(Url::parse("https://example.com/clip.mp4")?)`; `VideoSource` is legacy SGLang pass-through, not the DashScope video API.
 
 ## Backend configuration
 
 | Backend | `new` arguments | Endpoint behavior | Dimensions and authentication |
 | --- | --- | --- | --- |
-| vLLM | `base_endpoint, model, pipeline_id, expected_dimensions` | Accepts `/` or `/v1/models`, then uses `/v1/embeddings` | Native dimensions by default; `.with_server_dimensions(...)` requests one. API key is optional via `.with_api_key(SecretString)`. |
-| llama.cpp | `endpoint, model_identity, pipeline_id, expected_dimensions, media_marker` | Accepts `/` or `/v1/models`, then uses `/v1/embeddings` | Native dimensions only. `model_identity` identifies the embedding space and is not sent to llama.cpp. |
+| vLLM | `base_endpoint, model, pipeline_id, expected_dimensions` | Accepts `/`, `/v1/models`, or `/v1/embeddings`; uses `/v1/embeddings` | Native dimensions by default; `.with_server_dimensions(...)` requests one, subject to deployment/model capability. API key is optional via `.with_api_key(SecretString)`. |
+| llama.cpp | `endpoint, model_identity, pipeline_id, expected_dimensions, media_marker` | Accepts `/`, `/v1/models`, or `/v1/embeddings`; uses `/v1/embeddings` | Native dimensions only. `model_identity` identifies the embedding space and is not sent to llama.cpp. |
 | DashScope | `full_native_post_url, model, pipeline_id, native_dimensions, api_key` | Requires the complete native POST URL | API key is required. `.with_server_dimensions(...)` accepts only 256, 512, 768, 1024, 1536, 2048, or 2560. |
-| SGLang | `endpoint, model, pipeline_id, native_dimensions` | Requires SGLang v0.5.11+; accepts `/` or `/v1/models`, then uses `/v1/embeddings` | Native dimensions only; API key is optional. Structured inputs are Jinja-templated by SGLang, so the client sends no manual Qwen text wrapper. |
+| SGLang | `endpoint, model, pipeline_id, native_dimensions` | Requires SGLang v0.5.11+; accepts `/`, `/v1/models`, or `/v1/embeddings`; uses `/v1/embeddings` | Native dimensions only; API key is optional. Structured inputs are Jinja-templated by SGLang, so the client sends no manual Qwen text wrapper. |
+
+These endpoint paths do not allow arbitrary proxy prefixes. DashScope continues to require its complete native URL.
 
 All configurations support `.with_timeouts(connect_timeout, request_timeout)`. Each also has `.allow_remote_http(true)`, which is only for an intentional non-loopback cleartext deployment.
 
@@ -109,9 +112,9 @@ All configurations support `.with_timeouts(connect_timeout, request_timeout)`. E
 
 `BatchEmbeddingResponse` exposes `embeddings()`/`into_embeddings()`; `EmbeddingResponse` exposes `embedding()`/`into_embedding()`. Both expose metadata via `space()`, `usage()`, and `diagnostics()`.
 
-`Error` distinguishes invalid configuration or input, transport failures, provider API errors, invalid responses, and dimension mismatches. Successful responses are checked for complete unique indices, expected dimensions, finite non-zero vectors, then L2-normalized by the library.
+`Error` distinguishes invalid configuration or input, transport failures, provider API errors, invalid responses, and dimension mismatches. Successful responses are checked for complete unique indices, expected dimensions, finite non-zero vectors, then L2-normalized locally by the library. vLLM requests do not send the removed `normalize` parameter; requested dimensions still depend on deployment/model capability.
 
-HTTPS is accepted by default. Cleartext HTTP is allowed only for loopback endpoints, or after explicit `.allow_remote_http(true)` opt-in for a remote endpoint. Redirects are disabled. API keys and content are redacted in relevant `Debug` output.
+HTTPS is accepted by default. Cleartext HTTP is allowed only for loopback endpoints, or after explicit `.allow_remote_http(true)` opt-in for a remote endpoint. Remote media URLs are syntax-validated only: the SDK does not fetch media; HTTP(S) URLs may include signed query strings, but userinfo and fragments are rejected. The service fetching remote media must constrain outbound access and redirects. Disabling redirects on SDK endpoint requests does not protect a provider's media fetch. API keys and content are redacted in relevant `Debug` output.
 
 ## E2E tests
 

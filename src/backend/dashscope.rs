@@ -8,7 +8,9 @@ use super::{
     DEFAULT_CONNECT_TIMEOUT, DEFAULT_REQUEST_TIMEOUT, MAX_MODEL_BYTES, MAX_PIPELINE_ID_BYTES,
 };
 use crate::transport::{MAX_DIAGNOSTIC_CHARS, sanitize_metadata, validate_identifier};
-use crate::validation::{IndexedEmbedding, validate_data_url, validate_embeddings};
+use crate::validation::{
+    IndexedEmbedding, validate_data_url, validate_embeddings, validate_media_url,
+};
 use crate::{
     BatchEmbeddingResponse, Diagnostics, DimensionMode, EmbeddingSpace, Error, MultimodalPart,
     Usage,
@@ -16,7 +18,8 @@ use crate::{
 
 pub(crate) const PROFILE_REVISION: &str = "qwen3-vl-embedding-dashscope-native-v1";
 pub(crate) const MAX_DASHSCOPE_CONTENTS: usize = 20;
-const MAX_DASHSCOPE_IMAGES: usize = 5;
+const MAX_DASHSCOPE_IMAGES: usize = 10;
+const MAX_DASHSCOPE_VIDEOS: usize = 1;
 const DASHSCOPE_DIMENSIONS: [usize; 7] = [256, 512, 768, 1024, 1536, 2048, 2560];
 
 /// DashScope configuration for an exact native multimodal embedding endpoint.
@@ -155,6 +158,7 @@ struct DashScopeInput<'a> {
 enum DashScopeContent<'a> {
     Text { text: &'a str },
     Image { image: &'a str },
+    Video { video: &'a str },
 }
 
 #[cfg(feature = "dashscope")]
@@ -245,6 +249,7 @@ pub(crate) fn build_dashscope_fusion_request<'a>(
         });
     }
     let mut image_count = 0;
+    let mut video_count = 0;
     let mut contents = Vec::with_capacity(parts.len());
     for part in parts {
         match part {
@@ -261,9 +266,36 @@ pub(crate) fn build_dashscope_fusion_request<'a>(
                 validate_data_url(image)?;
                 contents.push(DashScopeContent::Image { image });
             }
+            MultimodalPart::ImageUrl(url) => {
+                image_count += 1;
+                if image_count > MAX_DASHSCOPE_IMAGES {
+                    return Err(Error::InvalidInput {
+                        message: format!(
+                            "DashScope fusion input must contain at most {MAX_DASHSCOPE_IMAGES} images"
+                        ),
+                    });
+                }
+                validate_media_url(url)?;
+                contents.push(DashScopeContent::Image {
+                    image: url.as_str(),
+                });
+            }
+            MultimodalPart::VideoUrl(url) => {
+                video_count += 1;
+                if video_count > MAX_DASHSCOPE_VIDEOS {
+                    return Err(Error::InvalidInput {
+                        message: "DashScope fusion input must contain at most one video".into(),
+                    });
+                }
+                validate_media_url(url)?;
+                contents.push(DashScopeContent::Video {
+                    video: url.as_str(),
+                });
+            }
             MultimodalPart::VideoSource(_) => {
-                return Err(Error::InvalidInput {
-                    message: "DashScope does not support VideoSource".into(),
+                return Err(Error::Unsupported {
+                    provider: crate::Provider::DashScope,
+                    feature: "VideoSource; use VideoUrl",
                 });
             }
         }
@@ -451,12 +483,38 @@ mod tests {
         let too_many: Vec<_> = (0..=MAX_DASHSCOPE_CONTENTS)
             .map(|_| MultimodalPart::Text("x".into()))
             .collect();
+        assert!(build_dashscope_fusion_request("m", &too_many[..20], None).is_ok());
         assert!(build_dashscope_fusion_request("m", &too_many, None).is_err());
         let image = png_data_url(1, 1);
         let too_many_images: Vec<_> = (0..=MAX_DASHSCOPE_IMAGES)
             .map(|_| MultimodalPart::ImageDataUrl(image.clone()))
             .collect();
+        assert!(build_dashscope_fusion_request("m", &too_many_images[..10], None).is_ok());
         assert!(build_dashscope_fusion_request("m", &too_many_images, None).is_err());
+        let video = Url::parse("https://media.example").unwrap();
+        assert!(
+            build_dashscope_fusion_request(
+                "m",
+                &[
+                    MultimodalPart::VideoUrl(video.clone()),
+                    MultimodalPart::Text("between".into()),
+                    MultimodalPart::ImageUrl(video.clone()),
+                ],
+                None,
+            )
+            .is_ok()
+        );
+        assert!(
+            build_dashscope_fusion_request(
+                "m",
+                &[
+                    MultimodalPart::VideoUrl(video.clone()),
+                    MultimodalPart::VideoUrl(video)
+                ],
+                None,
+            )
+            .is_err()
+        );
 
         for dimension in [255, 257, 4096] {
             let config = DashScopeConfig::new(

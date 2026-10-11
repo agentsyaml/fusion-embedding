@@ -10,7 +10,7 @@ use std::{
 
 use common::*;
 use fusion_embedding::{
-    BatchEmbeddingResponse, Client, DimensionMode, EmbedOptions, Error, VllmConfig,
+    BatchEmbeddingResponse, Client, DimensionMode, EmbedOptions, Error, MultimodalPart, VllmConfig,
 };
 use secrecy::SecretString;
 use serde_json::json;
@@ -29,6 +29,17 @@ fn client(endpoint: Url, dimensions: usize) -> Client {
     .with_timeouts(IO_TIMEOUT, IO_TIMEOUT)
     .unwrap();
     Client::new(config).unwrap()
+}
+
+fn png_data_url() -> String {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    let mut bytes = vec![137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13];
+    bytes.extend_from_slice(b"IHDR");
+    bytes.extend_from_slice(&1_u32.to_be_bytes());
+    bytes.extend_from_slice(&1_u32.to_be_bytes());
+    bytes.extend_from_slice(&[8, 2, 0, 0, 0]);
+    bytes.extend_from_slice(&[0; 4]);
+    format!("data:image/png;base64,{}", STANDARD.encode(bytes))
 }
 
 fn server_dimensions_client(endpoint: Url, dimensions: usize) -> Client {
@@ -93,8 +104,7 @@ async fn post_contract_and_chunked_success_are_observable() {
                 "<|im_start|>system\nRepresent the user's input.<|im_end|>\n<|im_start|>user\nfirst<|im_end|>\n<|im_start|>assistant\n",
                 "<|im_start|>system\nRepresent the user's input.<|im_end|>\n<|im_start|>user\nsecond<|im_end|>\n<|im_start|>assistant\n"
             ],
-            "encoding_format": "float",
-            "normalize": true
+            "encoding_format": "float"
         })
     );
     assert_eq!(response.embeddings(), &[vec![0.6, 0.8], vec![0.0, 1.0]]);
@@ -134,13 +144,42 @@ async fn vllm_server_dimensions_are_sent_and_recorded_in_space() {
                 "<|im_start|>system\nRepresent the user's input.<|im_end|>\n<|im_start|>user\nsecond<|im_end|>\n<|im_start|>assistant\n"
             ],
             "encoding_format": "float",
-            "normalize": true,
             "dimensions": 2
         })
     );
     assert_eq!(response.space().dimension_mode(), DimensionMode::Server);
     assert_eq!(response.space().expected_dimensions().get(), 2);
     assert_eq!(response.embeddings(), &[vec![0.6, 0.8], vec![0.0, 1.0]]);
+}
+
+#[tokio::test]
+async fn vllm_url_and_data_images_keep_order_without_normalize() {
+    let body = br#"{"data":[{"index":0,"embedding":[3,4]}]}"#;
+    let (endpoint, server) = spawn_server(move |stream| {
+        write_chunked(stream, "200 OK", &[], body, 8).unwrap();
+    });
+    let data = png_data_url();
+    client(endpoint, 2)
+        .embed_multimodal_with_options(
+            &[
+                MultimodalPart::ImageUrl(Url::parse("https://media.example/image.png").unwrap()),
+                MultimodalPart::ImageDataUrl(data.clone()),
+            ],
+            EmbedOptions::default(),
+        )
+        .await
+        .unwrap();
+    let (request, ()) = server.join().unwrap();
+    let payload = serde_json::from_slice::<serde_json::Value>(&request.body).unwrap();
+    assert_eq!(
+        payload["messages"][1]["content"][0]["image_url"]["url"],
+        "https://media.example/image.png"
+    );
+    assert_eq!(
+        payload["messages"][1]["content"][1]["image_url"]["url"],
+        data
+    );
+    assert!(payload.get("normalize").is_none());
 }
 
 #[tokio::test]

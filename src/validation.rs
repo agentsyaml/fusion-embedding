@@ -1,11 +1,30 @@
 use base64::{Engine as _, engine::general_purpose::STANDARD};
 use serde::Deserialize;
+#[cfg(any(test, feature = "vllm", feature = "dashscope", feature = "sglang"))]
+use url::Url;
 
 use crate::Error;
 
 const MAX_IMAGE_BYTES: usize = 5 * 1024 * 1024;
 const MAX_IMAGE_EDGE: u32 = 16_384;
 const MAX_IMAGE_PIXELS: u64 = 40_000_000;
+
+/// Checks URL syntax and scheme only; this does not fetch the URL or provide SSRF protection.
+#[cfg(any(test, feature = "vllm", feature = "dashscope", feature = "sglang"))]
+pub(crate) fn validate_media_url(url: &Url) -> Result<(), Error> {
+    if !matches!(url.scheme(), "http" | "https")
+        || url.host().is_none()
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.fragment().is_some()
+    {
+        return Err(Error::InvalidInput {
+            message: "media URL must be HTTP(S), have a host, and contain no userinfo or fragment"
+                .into(),
+        });
+    }
+    Ok(())
+}
 
 #[derive(Deserialize)]
 pub(crate) struct IndexedEmbedding {
@@ -284,6 +303,31 @@ pub(crate) fn normalize_vector(vector: Vec<f32>) -> Result<Vec<f32>, Error> {
 mod tests {
     use super::*;
     use base64::engine::general_purpose::STANDARD;
+
+    #[test]
+    fn media_url_allows_http_https_and_signed_queries() {
+        for url in [
+            "http://example.com/media",
+            "https://example.com/media?signature=private",
+        ] {
+            assert!(validate_media_url(&Url::parse(url).unwrap()).is_ok());
+        }
+    }
+
+    #[test]
+    fn media_url_rejects_unsupported_or_sensitive_url_components() {
+        for value in [
+            "ftp://example.com/media",
+            "file:///tmp/media",
+            "https://user:password@example.com/media",
+            "https://example.com/media#secret-fragment",
+        ] {
+            let url = Url::parse(value).unwrap();
+            let error = validate_media_url(&url).unwrap_err();
+            assert!(!error.to_string().contains(value));
+            assert!(!format!("{error:?}").contains(value));
+        }
+    }
 
     fn png_data_url(width: u32, height: u32) -> String {
         let mut bytes = vec![137, 80, 78, 71, 13, 10, 26, 10, 0, 0, 0, 13];

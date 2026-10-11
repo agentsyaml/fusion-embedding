@@ -5,7 +5,7 @@ mod common;
 use std::num::NonZeroUsize;
 
 use common::*;
-use fusion_embedding::{Client, EmbedOptions, LlamaCppConfig, MultimodalPart, Provider};
+use fusion_embedding::{Client, EmbedOptions, Error, LlamaCppConfig, MultimodalPart, Provider};
 use serde_json::json;
 use url::Url;
 
@@ -137,4 +137,25 @@ async fn llama_fusion_post_uses_exact_wrapper_and_single_base64_array() {
     assert!((norm - 1.0).abs() < 1e-6);
     assert_eq!(response.usage().input_tokens(), Some(17));
     assert_eq!(response.usage().total_tokens(), Some(17));
+}
+
+#[tokio::test]
+async fn llama_remote_image_url_is_unsupported_before_http() {
+    let llama = llama_client(Url::parse("http://127.0.0.1:9/").unwrap(), 2, "<marker>");
+    let error = llama
+        .embed_multimodal_with_options(
+            &[MultimodalPart::ImageUrl(
+                Url::parse("https://media.example/image").unwrap(),
+            )],
+            EmbedOptions::default(),
+        )
+        .await
+        .unwrap_err();
+    assert!(matches!(
+        error,
+        Error::Unsupported {
+            provider: Provider::LlamaCpp,
+            ..
+        }
+    ));
 }

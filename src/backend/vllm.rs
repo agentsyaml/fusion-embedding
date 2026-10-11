@@ -11,8 +11,8 @@ use super::{
     MAX_PIPELINE_ID_BYTES,
 };
 use crate::transport::validate_identifier;
-use crate::validation::validate_data_url;
-use crate::{DimensionMode, Error, MultimodalPart};
+use crate::validation::{validate_data_url, validate_media_url};
+use crate::{DimensionMode, Error, MultimodalPart, Provider};
 
 pub(crate) const PROFILE_REVISION: &str = "qwen3-vl-embedding-chat-v2";
 const EMBEDDINGS_PATH: &str = "/v1/embeddings";
@@ -20,7 +20,7 @@ const SYSTEM_PROMPT: &str = "Represent the user's input.";
 
 /// vLLM client configuration. All deployment identity is fixed at construction.
 ///
-/// The endpoint path must be `/` or exactly `/v1/models`; the client fixes the
+/// The endpoint path must be `/`, `/v1/models`, or `/v1/embeddings`; the client fixes the
 /// request path to `/v1/embeddings`.
 #[cfg(feature = "vllm")]
 pub struct VllmConfig {
@@ -127,7 +127,6 @@ pub(crate) struct TextRequest<'a> {
     pub(crate) model: &'a str,
     pub(crate) input: &'a [String],
     pub(crate) encoding_format: EncodingFormat,
-    pub(crate) normalize: bool,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub(crate) dimensions: Option<usize>,
 }
@@ -139,7 +138,6 @@ pub(crate) struct FusionRequest<'a> {
     messages: [Message<'a>; 3],
     continue_final_message: bool,
     add_special_tokens: bool,
-    normalize: bool,
     encoding_format: EncodingFormat,
     #[serde(skip_serializing_if = "Option::is_none")]
     dimensions: Option<usize>,
@@ -200,9 +198,17 @@ pub(crate) fn build_fusion_request<'a>(
                     image_url: ImageUrl { url },
                 });
             }
-            MultimodalPart::VideoSource(_) => {
-                return Err(Error::InvalidInput {
-                    message: "vLLM does not support VideoSource".into(),
+            MultimodalPart::ImageUrl(url) => {
+                image_count += 1;
+                validate_media_url(url)?;
+                user_content.push(MessagePart::ImageUrl {
+                    image_url: ImageUrl { url: url.as_str() },
+                });
+            }
+            MultimodalPart::VideoSource(_) | MultimodalPart::VideoUrl(_) => {
+                return Err(Error::Unsupported {
+                    provider: Provider::Vllm,
+                    feature: "video inputs",
                 });
             }
         }
@@ -233,7 +239,6 @@ pub(crate) fn build_fusion_request<'a>(
         ],
         continue_final_message: true,
         add_special_tokens: true,
-        normalize: true,
         encoding_format: EncodingFormat::Float,
         dimensions: dimensions.map(NonZeroUsize::get),
     })
@@ -252,9 +257,9 @@ pub(crate) fn normalize_endpoint(mut endpoint: Url) -> Result<Url, Error> {
             message: "endpoint must be an absolute URL without userinfo, query, or fragment".into(),
         });
     }
-    if !matches!(endpoint.path(), "/" | "/v1/models") {
+    if !matches!(endpoint.path(), "/" | "/v1/models" | EMBEDDINGS_PATH) {
         return Err(Error::Config {
-            message: "vLLM endpoint path must be / or /v1/models".into(),
+            message: "vLLM endpoint path must be /, /v1/models, or /v1/embeddings".into(),
         });
     }
     endpoint.set_path(EMBEDDINGS_PATH);
@@ -287,7 +292,6 @@ mod tests {
             model: "configured",
             input: &formatted,
             encoding_format: EncodingFormat::Float,
-            normalize: true,
             dimensions: None,
         };
         assert_eq!(
@@ -299,7 +303,6 @@ mod tests {
                     "<|im_start|>system\nRepresent the user's input.<|im_end|>\n<|im_start|>user\nsecond<|im_end|>\n<|im_start|>assistant\n"
                 ],
                 "encoding_format": "float",
-                "normalize": true
             })
         );
     }
@@ -328,7 +331,6 @@ mod tests {
                 ],
                 "continue_final_message": true,
                 "add_special_tokens": true,
-                "normalize": true,
                 "encoding_format": "float"
             })
         );
@@ -345,7 +347,6 @@ mod tests {
                 model: "configured",
                 input: &formatted,
                 encoding_format: EncodingFormat::Float,
-                normalize: true,
                 dimensions: Some(dimensions.get()),
             })
             .unwrap(),
@@ -353,7 +354,6 @@ mod tests {
                 "model": "configured",
                 "input": ["<|im_start|>system\nRepresent the user's input.<|im_end|>\n<|im_start|>user\nfirst<|im_end|>\n<|im_start|>assistant\n"],
                 "encoding_format": "float",
-                "normalize": true,
                 "dimensions": 1024
             })
         );
@@ -381,7 +381,6 @@ mod tests {
                 ],
                 "continue_final_message": true,
                 "add_special_tokens": true,
-                "normalize": true,
                 "encoding_format": "float",
                 "dimensions": 1024
             })
@@ -427,12 +426,30 @@ mod tests {
             payload["messages"][1]["content"][1]["image_url"]["url"],
             image
         );
+        let remote = Url::parse("https://media.example/image").unwrap();
+        let mixed = serde_json::to_value(
+            build_fusion_request(
+                "m",
+                &[
+                    MultimodalPart::ImageUrl(remote.clone()),
+                    MultimodalPart::ImageDataUrl(png_data_url(1, 1)),
+                ],
+                None,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            mixed["messages"][1]["content"][0]["image_url"]["url"],
+            remote.as_str()
+        );
     }
     #[test]
     fn endpoint_security_and_fixed_path() {
         for endpoint in [
             Url::parse("http://localhost:8000/").unwrap(),
             Url::parse("http://localhost:8000/v1/models").unwrap(),
+            Url::parse("http://localhost:8000/v1/embeddings").unwrap(),
         ] {
             let config =
                 VllmConfig::new(endpoint, "model", "pipeline", NonZeroUsize::new(3).unwrap())

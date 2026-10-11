@@ -168,6 +168,35 @@ async fn dashscope_fusion_rejects_text_operation_response_type() {
 }
 
 #[tokio::test]
+async fn dashscope_image_video_text_urls_are_serialized_in_order() {
+    let body = br#"{"output":{"embeddings":[{"index":0,"embedding":[3,4],"type":"fusion"}]} }"#;
+    let (endpoint, server) = spawn_server(move |stream| {
+        write_chunked(stream, "200 OK", &[], body, 8).unwrap();
+    });
+    let image = Url::parse("https://media.example/image").unwrap();
+    let video = Url::parse("https://media.example/video").unwrap();
+    dashscope_client(endpoint, None)
+        .embed_multimodal_with_options(
+            &[
+                MultimodalPart::ImageUrl(image.clone()),
+                MultimodalPart::VideoUrl(video.clone()),
+                MultimodalPart::Text("caption".into()),
+            ],
+            EmbedOptions::default(),
+        )
+        .await
+        .unwrap();
+    let (request, ()) = server.join().unwrap();
+    let payload = serde_json::from_slice::<serde_json::Value>(&request.body).unwrap();
+    assert_eq!(
+        payload["input"]["contents"],
+        json!([
+            {"image": image.as_str()}, {"video": video.as_str()}, {"text":"caption"}
+        ])
+    );
+}
+
+#[tokio::test]
 async fn dashscope_top_level_api_error_uses_body_request_id_safely() {
     let body = br#"{"code":"InvalidParameter","message":"private dash message","request_id":"dash-error-request"}"#;
     let (endpoint, server) = spawn_server(move |stream| {

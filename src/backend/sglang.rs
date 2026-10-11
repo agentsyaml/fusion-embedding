@@ -9,7 +9,7 @@ use super::{
     MAX_PIPELINE_ID_BYTES,
 };
 use crate::transport::validate_identifier;
-use crate::validation::validate_data_url;
+use crate::validation::{validate_data_url, validate_media_url};
 use crate::{Error, MultimodalPart, Provider};
 
 pub(crate) const PROFILE_REVISION: &str = "qwen3-vl-embedding-sglang-jinja-v1";
@@ -173,6 +173,22 @@ pub(crate) fn build_fusion_request<'a>(
                 }
                 image = Some(validate_data_url(data_url)?.to_owned());
             }
+            MultimodalPart::ImageUrl(url) => {
+                if image.is_some() {
+                    return Err(Error::Unsupported {
+                        provider: Provider::Sglang,
+                        feature: "multiple images in one embedding input",
+                    });
+                }
+                if video.is_some() || text.is_some() {
+                    return Err(Error::InvalidInput {
+                        message: "SGLang fusion parts must use canonical image, video, text order"
+                            .into(),
+                    });
+                }
+                validate_media_url(url)?;
+                image = Some(url.to_string());
+            }
             MultimodalPart::VideoSource(source) => {
                 if source.trim().is_empty() {
                     return Err(Error::InvalidInput {
@@ -192,6 +208,22 @@ pub(crate) fn build_fusion_request<'a>(
                     });
                 }
                 video = Some(source.clone());
+            }
+            MultimodalPart::VideoUrl(url) => {
+                if video.is_some() {
+                    return Err(Error::InvalidInput {
+                        message: "SGLang public embedding protocol supports at most one video per input item"
+                            .into(),
+                    });
+                }
+                if text.is_some() {
+                    return Err(Error::InvalidInput {
+                        message: "SGLang fusion parts must use canonical image, video, text order"
+                            .into(),
+                    });
+                }
+                validate_media_url(url)?;
+                video = Some(url.to_string());
             }
         }
     }
@@ -220,9 +252,9 @@ pub(crate) fn normalize_endpoint(mut endpoint: Url) -> Result<Url, Error> {
             message: "endpoint must be an absolute URL without userinfo, query, or fragment".into(),
         });
     }
-    if !matches!(endpoint.path(), "/" | "/v1/models") {
+    if !matches!(endpoint.path(), "/" | "/v1/models" | EMBEDDINGS_PATH) {
         return Err(Error::Config {
-            message: "SGLang endpoint path must be / or /v1/models".into(),
+            message: "SGLang endpoint path must be /, /v1/models, or /v1/embeddings".into(),
         });
     }
     endpoint.set_path(EMBEDDINGS_PATH);
